@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Offline: no network access is needed or attempted. Everything, including Java decompilation, runs in this page.
+     (No CSP meta tag: under file:// Chrome treats 'self' as an opaque origin and would block local scripts.) -->
+<title>IBM ACE Migration Workbench</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">IBM ACE Migration Workbench <span class="ver" id="ver"></span></div>
+  <div class="barpick">
+    <label class="btn primary" for="barInput">Open BAR or workspace ZIP…</label>
+    <input type="file" id="barInput" accept=".bar,.zip,.appzip,.libzip" hidden>
+    <span id="barLabel" class="muted">No BAR or workspace ZIP loaded</span>
+  </div>
+  <div class="route">ACE <b id="srcVer"></b> (Java 8) &rarr; ACE <b id="tgtVer"></b> (Java 17)</div>
+</header>
+<div class="layout">
+  <nav class="sidenav" id="nav">
+    <a data-view="dashboard">1. Dashboard</a>
+    <a data-view="inspector">2. BAR Inspector</a>
+    <a data-view="extraction">3. Source Extraction</a>
+    <a data-view="decompiler">4. Java Decompiler</a>
+    <a data-view="explorer">5. Project Explorer</a>
+    <a data-view="export12">6. ACE 12 Export</a>
+    <a data-view="migrate13">7. ACE 13 Migration</a>
+    <a data-view="checks">8. Pre-Migration Checks</a>
+    <a data-view="reports">9. Reports</a>
+    <a data-view="settings">10. Settings</a>
+    <div class="navfoot"><a href="tests/index.html" target="_blank" class="small">Open test suite ↗</a></div>
+  </nav>
+  <main id="view" class="view"></main>
+</div>
+<footer class="logdock" id="logdock">
+  <div class="logbar">
+    <div class="progress"><div class="progress-fill" id="progFill"></div><span id="progText">Idle</span></div>
+    <button class="btn danger small" id="cancelBtn" disabled>Cancel</button>
+    <button class="btn small" id="logToggle">Log ▾</button>
+    <button class="btn small" id="logSave">Save log</button>
+    <button class="btn small" id="logClear">Clear</button>
+    <span class="counts" id="logCounts"></span>
+  </div>
+  <div class="logpanel" id="logPanel"></div>
+</footer>
+
+<!-- Core -->
+<script src="js/core/util.js"></script>
+<script src="config/default-config.js"></script>
+<script src="config/versions.js"></script>
+<script src="config/driver-signatures.js"></script>
+<script src="js/core/settings.js"></script>
+<!-- Archive engine -->
+<script src="js/archive/crc32.js"></script>
+<script src="js/archive/zip-reader.js"></script>
+<script src="js/archive/zip-writer.js"></script>
+<script src="js/archive/classify.js"></script>
+<script src="js/archive/bar-engine.js"></script>
+<!-- Java -->
+<script src="js/java/classfile.js"></script>
+<script src="js/java/jar-analyzer.js"></script>
+<!-- Java decompiler (vanilla JavaScript, no external runtime) -->
+<script src="js/decompiler/bytecode.js"></script>
+<script src="js/decompiler/types.js"></script>
+<script src="js/decompiler/ir.js"></script>
+<script src="js/decompiler/translate.js"></script>
+<script src="js/decompiler/structure.js"></script>
+<script src="js/decompiler/passes.js"></script>
+<script src="js/decompiler/syntax-check.js"></script>
+<script src="js/decompiler/decompiler.js"></script>
+<!-- Rules -->
+<script src="rules/java8-to-java17.rules.js"></script>
+<script src="rules/ace12-to-ace13.rules.js"></script>
+<!-- Analysis -->
+<script src="js/analysis/msgflow-parser.js"></script>
+<script src="js/analysis/esql-parser.js"></script>
+<script src="js/analysis/java17-analyzer.js"></script>
+<script src="js/analysis/ace-rule-engine.js"></script>
+<script src="js/analysis/premigration.js"></script>
+<script src="js/analysis/migration-scanner.js"></script>
+<!-- Projects, transforms, reports -->
+<script src="js/project/diff.js"></script>
+<script src="js/project/transforms.js"></script>
+<script src="js/project/eclipse-project.js"></script>
+<script src="js/project/explorer-model.js"></script>
+<script src="js/project/project-builder.js"></script>
+<script src="js/report/reports.js"></script>
+<script src="js/workflow.js"></script>
+<!-- UI -->
+<script src="js/ui/ui-core.js"></script>
+<script src="js/ui/views-inspect.js"></script>
+<script src="js/ui/views-java.js"></script>
+<script src="js/ui/views-explorer.js"></script>
+<script src="js/ui/views-migrate.js"></script>
+<script src="js/ui/views-settings.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

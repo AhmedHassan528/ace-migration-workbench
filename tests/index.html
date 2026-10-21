@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workbench Test Suite</title>
+<style>
+  :root { --bg:#fff; --ink:#1b1f24; --line:#d5d9de; --pass:#1a7f37; --fail:#b4141f; --skip:#8a5300; --ext:#5b3ea6; --code:#f6f8fa; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#15181c; --ink:#e3e6ea; --line:#343a42; --pass:#4cc06a; --fail:#ff6b74; --skip:#e3a33b; --ext:#b39cff; --code:#23282e; } }
+  body { font: 14px/1.45 "Segoe UI", system-ui, Arial, sans-serif; margin: 18px; background: var(--bg); color: var(--ink); }
+  table { border-collapse: collapse; width: 100%; } td, th { border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; text-align: left; font-size: 13px; }
+  pre { margin: 0; font: 11px/1.4 Consolas, monospace; white-space: pre-wrap; background: var(--code); padding: 4px; max-height: 220px; overflow: auto; }
+  .s-PASS b { color: var(--pass); } .s-FAIL b { color: var(--fail); } .s-NOTRUN b { color: var(--skip); } .s-EXTERNAL b { color: var(--ext); }
+  .m { color: #778; font-size: 11px; } .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+  button, input { font: inherit; } #summary { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>IBM ACE Migration Workbench - test suite</h1>
+<p>Runs offline from <code>file://</code>. Synthetic fixtures are generated in memory. Tests needing the real BAR report <b>NOT RUN</b> with the reason when the prerequisite is missing. <b>EXTERNAL</b> tests need the IBM Toolkit/runtime and are never reported as passed here.</p>
+<div class="bar">
+  <label>Real BAR (optional): <input type="file" id="bar" accept=".bar"></label>
+  <label>Real workspace ZIP (optional): <input type="file" id="wsZip" accept=".zip"></label>
+  <button id="run">Run all tests</button> <button id="dl">Download results (JSON)</button>
+  <span id="summary"></span>
+</div>
+<div id="results"></div>
+
+<script src="../js/core/util.js"></script>
+<script src="../config/default-config.js"></script>
+<script src="../config/versions.js"></script>
+<script src="../config/driver-signatures.js"></script>
+<script src="../js/core/settings.js"></script>
+<script src="../js/archive/crc32.js"></script>
+<script src="../js/archive/zip-reader.js"></script>
+<script src="../js/archive/zip-writer.js"></script>
+<script src="../js/archive/classify.js"></script>
+<script src="../js/archive/bar-engine.js"></script>
+<script src="../js/java/classfile.js"></script>
+<script src="../js/java/jar-analyzer.js"></script>
+<!-- Java decompiler (vanilla JavaScript, no external runtime) -->
+<script src="../js/decompiler/bytecode.js"></script>
+<script src="../js/decompiler/types.js"></script>
+<script src="../js/decompiler/ir.js"></script>
+<script src="../js/decompiler/translate.js"></script>
+<script src="../js/decompiler/structure.js"></script>
+<script src="../js/decompiler/passes.js"></script>
+<script src="../js/decompiler/syntax-check.js"></script>
+<script src="../js/decompiler/decompiler.js"></script>
+<script src="../rules/java8-to-java17.rules.js"></script>
+<script src="../rules/ace12-to-ace13.rules.js"></script>
+<script src="../js/analysis/msgflow-parser.js"></script>
+<script src="../js/analysis/esql-parser.js"></script>
+<script src="../js/analysis/java17-analyzer.js"></script>
+<script src="../js/analysis/ace-rule-engine.js"></script>
+<script src="../js/analysis/premigration.js"></script>
+<script src="../js/analysis/migration-scanner.js"></script>
+<script src="../js/project/diff.js"></script>
+<script src="../js/project/transforms.js"></script>
+<script src="../js/project/eclipse-project.js"></script>
+<script src="../js/project/explorer-model.js"></script>
+<script src="../js/project/project-builder.js"></script>
+<script src="../js/report/reports.js"></script>
+<script src="../js/workflow.js"></script>
+<script>window.ACE.ui = { register: function () {} }; /* only validateRuleSet is needed from the Settings view */</script>
+<script src="../js/ui/views-settings.js"></script>
+<script src="harness.js"></script>
+<script src="fixtures.js"></script>
+<script src="fixtures-classes.js"></script>
+<script src="test-cases.js"></script>
+<script>
+(function () {
+  // Isolated settings: defaults only, never written to this browser's storage by the tests.
+  ACE.settings.current = ACE.util.deepClone(window.ACE_DEFAULT_CONFIG);
+  ACE.settings.save = function () { return false; };
+  T.render();
+  async function env() {
+    var e = { barFile: document.getElementById('bar').files[0] || null, workspaceFile: document.getElementById('wsZip').files[0] || null };
+    return e;
+  }
+  window.runAll = async function () { T.results = {}; await T.run(null, await env()); return T.exportJson(); };
+  document.getElementById('run').onclick = function () { window.runAll(); };
+  document.getElementById('dl').onclick = function () { ACE.util.download(T.exportJson(), 'workbench-test-results.json', 'application/json'); };
+})();
+</script>
+</body>
+</html>

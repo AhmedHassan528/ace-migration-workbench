@@ -1,0 +1,40 @@
+{
+  "id": "sample-organisation-rules",
+  "version": "1.0.0",
+  "description": "Example of a user-supplied ACE rule set. Import it in Settings > Migration rules. Rules without a 'status' are treated as heuristic.",
+  "rules": [
+    {
+      "id": "ORG-HARDCODED-IP",
+      "severity": "Warning",
+      "status": "heuristic",
+      "category": "External endpoints",
+      "title": "Endpoint uses a hard-coded IP address",
+      "match": { "nodeTypes": ["family:http", "family:soap"], "attrMatches": { "webServiceURL|URLSpecifier": "^https?://\\d+\\.\\d+\\.\\d+\\.\\d+" } },
+      "why": "IP addresses differ between environments and break on re-addressing.",
+      "action": "Use a host name and set it per environment through BAR overrides.",
+      "refs": []
+    },
+    {
+      "id": "ORG-DSN-INVENTORY",
+      "severity": "Information",
+      "status": "heuristic",
+      "category": "Database connectivity",
+      "title": "Data source used by flows (inventory)",
+      "match": { "fact": "dataSources" },
+      "why": "Every DSN needs an ODBC definition and credentials on the ACE 13 server.",
+      "action": "Add each DSN to the environment build sheet.",
+      "refs": []
+    },
+    {
+      "id": "ORG-JAVA-ROUTINE",
+      "severity": "Manual Review",
+      "status": "heuristic",
+      "category": "Java runtime compatibility",
+      "title": "ESQL calls Java - owner sign-off required",
+      "match": { "esql": "javaRoutines" },
+      "why": "Organisation policy: Java called from ESQL must be signed off by the Java code owner after the Java 17 move.",
+      "action": "Get sign-off from the owning team.",
+      "refs": []
+    }
+  ]
+}

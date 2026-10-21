@@ -1,0 +1,5 @@
+# Outputs from real (private) inputs are never committed
+demo-output/
+tests/results/
+*.bar
+*.zip
