@@ -325,9 +325,11 @@
 
   /* ---------- 10. offline & large files ---------- */
   test('T21', 'Offline operation: no external resources loaded', { category: 'Offline' }, async function (a) {
+    // external = another origin than this page (file://, localhost or the hosting site itself are all "own")
+    function external(u) { return /^https?:/.test(u) && !/^https?:\/\/(127\.0\.0\.1|localhost)[:\/]/.test(u) && (location.protocol === 'file:' || u.indexOf(location.origin + '/') !== 0); }
     var scripts = Array.prototype.map.call(document.scripts, function (s) { return s.src; }).filter(Boolean);
-    a.ok(scripts.every(function (s) { return !/^https?:\/\/(?!127\.0\.0\.1|localhost)/.test(s); }), scripts.length + ' scripts, all local');
-    var res = performance.getEntriesByType('resource').map(function (e) { return e.name; }).filter(function (n) { return /^https?:/.test(n) && !/^https?:\/\/(127\.0\.0\.1|localhost)/.test(n); });
+    a.ok(scripts.every(function (s) { return !external(s); }), scripts.length + ' scripts, all from this site');
+    var res = performance.getEntriesByType('resource').map(function (e) { return e.name; }).filter(external);
     a.eq(res.length, 0, 'no requests to external hosts');
     a.note('page protocol: ' + location.protocol + (location.protocol === 'file:' ? ' (opened directly from disk)' : ''));
     var c = util.capabilities(); a.ok(c.deflateRaw, 'native DecompressionStream("deflate-raw") available');
