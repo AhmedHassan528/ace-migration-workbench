@@ -163,7 +163,7 @@
     var wc = ws[copy]; if (!wc || !wc.overlay[outPath]) return false;
     var ov = wc.overlay[outPath], last = ov.history[ov.history.length - 1];
     if (ov.history.length <= 1) delete wc.overlay[outPath];
-    else { ov.history = ov.history.slice(0, -1); ov.text = last.before; }
+    else { ov.history = ov.history.slice(0, -1); var prev = ov.history[ov.history.length - 1]; ov.text = last.before; ov.deleted = !!prev.deleted; if (prev.deleted) ov.text = null; if (!prev.created || prev.after != null) delete ov.bytes; }
     wc.changelog.push({ t: util.nowIso(), path: outPath, action: 'undone', kind: last.kind, title: 'Undo: ' + last.title, fixId: last.fixId || null });
     // An undone fix (from any view) is no longer applied; it and the alternatives it superseded are
     // re-proposed from the restored text by the next analysis.

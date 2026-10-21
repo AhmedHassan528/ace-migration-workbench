@@ -53,9 +53,61 @@ These checks ran on the development machine, outside the tool:
 
 On a real 5-project workspace (private) the analysis correctly blocked all three framework libraries: ESQL and subflows in the default schema. It reported the missing library through which the service reaches them, and changed nothing.
 
+## 5. Refactor strategy (default): converting real framework libraries
+
+Real framework libraries usually cannot just change type. In the two real workspaces tested:
+- ESQL and subflows were in the default schema;
+- subflows of one library nest subflows of another;
+- libraries pass their own ESQL modules into other libraries' subflows;
+- applications pass **their** ESQL modules into framework subflows through promoted properties ("hooks").
+
+Each rule below was observed on an ACE 13.0.2.0 integration server before the refactoring was built:
+
+| # | Behaviour | Result |
+|---|---|---|
+| R1 | Shared subflow using its own modules | works |
+| R2 | Application flow using a shared subflow | works |
+| R3 | Application subflow nesting a shared subflow | works |
+| R4 | Application compute node running a shared module (`esql://routine/<schema>#M.Main`) | works |
+| R5 | Application calling a shared routine qualified (`CALL s.P()`, `SET x = s.F(1)`) | works |
+| R6 | Application referencing a constant or namespace prefix of another schema (`s.CONST`) | **fails**: BIP2432E |
+| R7 | Application module passed into a **shared** subflow through a promoted property, also from a named schema | **fails**: BIP4127E |
+| R8 | Subflow of shared library A nesting a subflow of shared library B | **fails**: BIP1360E |
+| R9 | Default-schema ESQL in a shared library | **fails**: BIP4129E |
+| R10 | Subflow schema taken from the translation `bundleName` (not only the folder) | without it: BIP1369E |
+
+What the refactoring does:
+1. **Merges** the dependency-connected static libraries into **one** shared library (default name `SharedFramework`; set your own). R8 and library-to-library hooks then become same-library references (R1).
+2. **Moves** their default-schema ESQL and subflows into **one** named broker schema (default: the library name in lower case). Their mutual unqualified calls and constants keep working. Subflow `nsURI`, `nsPrefix` and `bundleName` are updated (R10).
+3. **Keeps local to each application** every subflow that receives an application module (R7), plus the subflows that hook is forwarded to. The local copies are in schema `<schema>.local`; they use the shared modules (R4) and nest the shared subflows (R3). The shared library still contains the whole framework, so its content does not depend on which service is converted.
+4. **Rewrites every reference:**
+   - subflow namespaces, node types and nested `href`s;
+   - `esql://routine` references, including the old bare form, promoted-property defaults and quoted module names such as `"X_Is?"`;
+   - schema-qualified calls from applications (R5);
+   - `.project` references and descriptors.
+5. **Copies into each application** the schema-level `CONSTANT` and `NAMESPACE` declarations it uses (R6), as `<Library>_Constants.esql`.
+6. **Blocks the whole run**, changing nothing, when something cannot be done safely:
+   - an application uses a library `SHARED` or `EXTERNAL` variable;
+   - library code calls application code;
+   - a library contains a message flow or unsupported resources;
+   - a referenced project is missing, or two libraries collide on names or paths.
+
+**Use the same shared library name and schema for every service.** Each service then references the same deployed shared library, and its local copies and constants follow the same names.
+
+### Evidence on a real workspace
+
+This check ran outside the tool, on one application with four interdependent static libraries in the default schema, 15 hooks and 50+ cross-library subflow uses:
+- The website produced 163 file operations: libraries merged, references rewritten, 4 hooked subflows kept local, and a constants file. Checks V1–V11 passed.
+- `ibmint` (ACE 13.0.2.0) built the shared library (`.shlibzip`) and the application (no `.libzip` copies inside).
+- Deployed to an integration server with the same policies as the original (policies are environment configuration, deployed for both versions only so that both could start), the **original and the converted versions start identically**. The shared library and the application load with no error or warning.
+
+The first runs of this check found three real problems that only the runtime revealed: the schema in `bundleName`, namespace prefixes, and bare promoted-property defaults. Each is now handled by the tool and caught by its validation.
+
 ## 4. Limitations
 
 - **Toolchain:** probes, builds and runtime tests used ACE **13.0.2.0**. Neither ACE 12.0.5 nor 13.0.8 was available. IBM's 12.0 and 13.0 shared-library documentation gives the same rules. `ibmint package` is documented for 12.0, but its availability on 12.0.5 specifically was not verified.
 - **Usage evidence** (which artifacts call a library) comes from parsed subflow references and ESQL `CALL`s. Function calls inside expressions are not traced.
 - **Java:** Java projects referenced by a converted library are loaded by the shared library's own class loader. Applications must not depend on those classes directly. The report asks for a test of every JavaCompute node and `LANGUAGE JAVA` routine.
-- **BAR input:** BAR input has no original project metadata, so the analysis runs on the generated `.project` files. For conversion, a Toolkit workspace ZIP is the reliable input.
+- **BAR input:** BAR input has no original project metadata, so the analysis runs on the generated `.project` files. For conversion, a Toolkit workspace ZIP is the reliable input. The refactor strategy requires a workspace ZIP.
+- **Startup is not message testing:** "starts identically" means every flow, subflow and ESQL module was loaded and compiled by the runtime. Sending real messages through the services needs their back ends (MQ, databases, SOAP partners) and was not done.
+- **Local copies:** hooked subflows are copied into each application, so a change to *those* subflows still needs the services rebuilt. Everything else in the framework is shared.

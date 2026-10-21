@@ -16,6 +16,9 @@
       '<label>Source version</label><div>ACE ' + esc(window.ACE_VERSIONS.source) + ' (fixed, see Settings)</div>' +
       '<label>Target(s)</label><div><label class="inline"><input type="checkbox" id="lcT12"' + (c.targets.indexOf('ace12') >= 0 ? ' checked' : '') + '> ACE ' + esc(window.ACE_VERSIONS.source) + ' (ACE 12 package)</label> &nbsp; <label class="inline"><input type="checkbox" id="lcT13"' + (c.targets.indexOf('ace13') >= 0 ? ' checked' : '') + '> ACE ' + esc(window.ACE_VERSIONS.target) + ' (ACE 13 package)</label></div>' +
       '<label>Library mode</label><div>shared</div>' +
+      '<label>Strategy</label><div><label class="inline"><input type="radio" name="lcStrat" value="refactor"' + (c.strategy !== 'in-place' ? ' checked' : '') + '> <b>Refactor</b> (recommended): merge interdependent libraries into one shared library, move ESQL/subflows into a named schema, keep application-hooked subflows local, rewrite all references</label><br><label class="inline"><input type="radio" name="lcStrat" value="in-place"' + (c.strategy === 'in-place' ? ' checked' : '') + '> <b>Type change only</b>: for libraries that are already valid shared libraries</label></div>' +
+      '<label>Shared library name</label><div><input type="text" id="lcName" placeholder="default: SharedFramework (or the library name when there is only one)" value="' + esc(c.sharedLibraryName || '') + '"><div class="small muted">Use the same name and schema for every service so they all share one library.</div></div>' +
+      '<label>Broker schema</label><div><input type="text" id="lcSchema" placeholder="default: the library name in lower case" value="' + esc(c.schema || '') + '"></div>' +
       '<label>Libraries to convert</label><div><label class="inline"><input type="radio" name="lcSel" value="auto"' + (auto ? ' checked' : '') + '> all static libraries</label> <label class="inline"><input type="radio" name="lcSel" value="pick"' + (auto ? '' : ' checked') + '> only these:</label> ' +
         (statics.length ? statics.map(function (n) { return '<label class="inline"><input type="checkbox" class="lcLib" value="' + esc(n) + '"' + (!auto && (c.libraries || []).indexOf(n) >= 0 ? ' checked' : '') + '> ' + esc(n) + '</label>'; }).join(' ') : '<span class="muted">(open a workspace ZIP or BAR to list its static libraries)</span>') + '</div>' +
       '<label>Known shared libraries</label><div><input type="text" class="wide" id="lcKnown" placeholder="names, comma separated" value="' + esc((c.knownSharedLibraries || []).join(', ')) + '"><div class="small muted">Libraries that are already shared libraries but are not in this input (e.g. converted earlier for another service).</div></div>' +
@@ -38,9 +41,22 @@
         (open[k] ? '<div class="small">' + l.blockers.map(function (b) { return '<p><b>' + esc(b.code) + '</b> (' + esc(b.basis) + '): ' + esc(b.evidence) + '<br>' + (b.locations || []).slice(0, 12).map(function (x) { return '<code>' + esc(x.file + (x.line ? ':' + x.line : '')) + '</code>'; }).join(' ') + '<br>' + (b.docs || []).map(function (u) { return '<a href="' + esc(u) + '" target="_blank" rel="noopener">' + esc(u.replace(/^https:\/\/(www\.)?/, '').slice(0, 70)) + '</a>'; }).join(' ') + '</p>'; }).join('') + '</div>' : '') + '</td></tr>';
     });
     h += '</table>';
+    if (p.target && p.target.sharedLibrary) {
+      h += '<div class="card"><div class="kv"><div>Shared library</div><div><b>' + esc(p.target.sharedLibrary) + '</b> (merges ' + esc(p.target.group.join(', ')) + ')</div><div>Broker schema</div><div><code>' + esc(p.target.schema) + '</code>; application-local copies in <code>' + esc(p.target.localSchema) + '</code></div>' +
+        '<div>Application hooks</div><div class="small">' + ((p.hooks || []).length ? p.hooks.map(function (x) { return '<code>' + esc(x.subflow) + '</code> receives ' + esc(x.properties.map(function (q) { return q.property; }).join(', ')) + ' from the application'; }).join('<br>') + '<br><span class="muted">An application ESQL module cannot run inside a shared subflow (verified: BIP4127E), so these subflows stay local to each application and use the shared framework.</span>' : 'none') + '</div></div></div>';
+    }
+    (p.notes || []).forEach(function (n) { h += '<p class="small">' + esc(n) + '</p>'; });
     if (p.edits.length) {
-      h += '<h3>Changes ' + (applied ? 'planned' : 'planned') + ' (' + p.edits.length + ' file(s); nothing else is touched)</h3>';
-      p.edits.forEach(function (e) { var k = 'e:' + t.target + ':' + e.path; h += '<div class="card"><div class="row"><code>' + esc(e.path) + '</code>' + (e.created ? ' <span class="tag generated">new file</span>' : '') + ' <span class="small">' + esc(e.notes.join('; ')) + '</span> <button class="btn small lcMore" data-k="' + esc(k) + '">' + (open[k] ? 'Hide' : 'Show') + ' change</button></div>' + (open[k] ? UI.diffHtml(ACE.diff(e.before, e.after)) : '') + '</div>'; });
+      var groups = { created: [], deleted: [], modified: [] };
+      p.edits.forEach(function (e) { groups[e.created ? 'created' : e.deleted ? 'deleted' : 'modified'].push(e); });
+      h += '<h3>Changes planned (' + p.edits.length + ': ' + groups.modified.length + ' modified, ' + groups.created.length + ' created, ' + groups.deleted.length + ' removed/moved)</h3>';
+      [['modified', 'Modified'], ['created', 'Created (new shared library, local copies, generated files)'], ['deleted', 'Removed (moved into the shared library)']].forEach(function (g) {
+        var list = groups[g[0]]; if (!list.length) return;
+        var gk = 'g:' + t.target + ':' + g[0];
+        h += '<details' + (g[0] === 'modified' || open[gk] ? ' open' : '') + '><summary><b>' + g[1] + '</b> (' + list.length + ')</summary>';
+        list.forEach(function (e) { var k = 'e:' + t.target + ':' + e.path; h += '<div class="card"><div class="row"><code>' + esc(e.path) + '</code> <span class="small">' + esc(e.notes.join('; ')) + '</span>' + (e.after != null && !e.bytesFrom ? ' <button class="btn small lcMore" data-k="' + esc(k) + '">' + (open[k] ? 'Hide' : 'Show') + ' ' + (e.created ? 'content' : 'change') + '</button>' : '') + '</div>' + (open[k] && e.after != null ? UI.diffHtml(ACE.diff(e.before || '', e.after)) : '') + '</div>'; });
+        h += '</details>';
+      });
     } else h += '<p class="muted">No file needs to change for this target.</p>';
     if (p.errors.length) h += '<div class="banner err"><b>Errors</b><ul>' + p.errors.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
     if (p.warnings.length) h += '<div class="banner warn"><b>Warnings</b><ul>' + p.warnings.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
@@ -85,6 +101,10 @@
         c.libraries = !pick || pick.value === 'auto' ? 'auto' : UI.$$('.lcLib', el).filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
         c.knownSharedLibraries = UI.$('#lcKnown', el).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
         c.validateAfterConversion = UI.$('#lcVal', el).checked;
+        var strat = UI.$$('input[name=lcStrat]', el).filter(function (r) { return r.checked; })[0];
+        c.strategy = strat ? strat.value : 'refactor';
+        c.sharedLibraryName = UI.$('#lcName', el).value.trim();
+        c.schema = UI.$('#lcSchema', el).value.trim();
         S.libraryConversion = c; ACE.settings.save();
         if (st.ws && !st.ws.fatal) ACE.workflow.analyze();
         ACE.log.info('Library conversion settings saved (' + (c.enabled ? 'enabled' : 'disabled') + ')');
@@ -95,7 +115,8 @@
       var ws = st.ws;
       var run = UI.$('#lcRun', el); if (run) run.onclick = function () {
         var p = ws.libConversion, libs = util.uniq([].concat.apply([], p.targets.map(function (t) { return t.plan.converted; }))), files = p.targets.reduce(function (a, t) { return a + t.plan.edits.length; }, 0);
-        UI.ask('Convert ' + libs.length + ' library(ies) to shared libraries: ' + libs.join(', ') + '?\n\n' + files + ' file(s) change in the ' + c.targets.map(function (t) { return t === 'ace12' ? 'ACE 12' : 'ACE 13'; }).join(' and ') + ' working copy: .project natures and descriptor references only. The original files stay unchanged and Undo restores them.', function () {
+        var tp = p.targets[0].plan, what = tp.target && tp.target.sharedLibrary ? 'Merge ' + libs.join(', ') + ' into shared library ' + tp.target.sharedLibrary + ' (schema ' + tp.target.schema + ') and update every reference' : 'Convert ' + libs.length + ' library(ies) to shared libraries: ' + libs.join(', ');
+        UI.ask(what + '?\n\n' + files + ' file change(s) in the ' + c.targets.map(function (t) { return t === 'ace12' ? 'ACE 12' : 'ACE 13'; }).join(' and ') + ' working copy' + (tp.target && tp.target.sharedLibrary ? ' (moved, created and modified files are listed under "Changes planned")' : ': .project natures and descriptor references only') + '. The original files stay unchanged (exported under _original-before-changes/) and Undo restores them.', function () {
           try { var r = ACE.workflow.convertLibraries(); var bad = r.targets.filter(function (t) { return t.validation && !t.validation.passed; }); if (bad.length) UI.notify('Converted, but validation reported problems. See "Last conversion".'); }
           catch (e) { UI.notify('Conversion was not applied: ' + e.message); }
           UI.refresh();

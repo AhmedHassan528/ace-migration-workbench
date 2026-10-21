@@ -29,7 +29,7 @@
   };
   var BASE_NS = 'http://com.ibm.etools.mft.descriptor.base';
   LC.KIND = 'library-conversion';
-  LC.DEFAULTS = { enabled: false, targets: ['ace13'], libraries: 'auto', knownSharedLibraries: [], validateAfterConversion: true };
+  LC.DEFAULTS = { enabled: false, targets: ['ace13'], strategy: 'refactor', sharedLibraryName: '', schema: '', libraries: 'auto', knownSharedLibraries: [], validateAfterConversion: true };
 
   /* Evidence behind each rule. basis: verified (probe on ACE 13.0.2.0), documented (IBM docs), toolkit (Toolkit builder rule text). */
   var DOC12 = 'https://www.ibm.com/docs/en/SSTTDS_12.0/com.ibm.etools.mft.doc/bc23067_.html', DOC13 = 'https://www.ibm.com/docs/en/SSTTDS_13.0/com.ibm.etools.mft.doc/bc23067_.html';
@@ -59,25 +59,35 @@
   /* Snapshot of every project in a copy: kind, refs, descriptor refs, files (current text). */
   LC.state = function (ws, copy) {
     var L = lay(ws), ov = overlayOf(ws, copy), byId = fileById(ws), refsInferred = ACE.project.references(ws, ws.facts), seen = {}, dup = [];
-    var projects = L.projects.map(function (p) {
+    // projects that exist only in the working copy (created by a refactoring conversion)
+    var layoutNames = {}; L.projects.forEach(function (p) { layoutNames[p.name] = true; });
+    var created = {};
+    Object.keys(ov).forEach(function (path) {
+      var o = ov[path], top = path.split('/')[0];
+      if (o.deleted || !o.history.length || !o.history[0].created) return;
+      (created[top] = created[top] || []).push({ rel: path.slice(top.length + 1), outPath: path, file: null, text: (function (x) { return function () { return x.text; }; })(o), changed: true, bytes: o.bytes || null });
+    });
+    var extra = Object.keys(created).filter(function (n) { return !layoutNames[n] && created[n].some(function (f) { return f.rel === '.project'; }); }).sort().map(function (n) { return { name: n, type: 'workspace-created', created: true }; });
+    var projects = L.projects.concat(extra).map(function (p) {
       if (seen[p.name]) dup.push(p.name); seen[p.name] = true;
       var files = L.files.filter(function (l) { return l.project === p.name; }).map(function (l) {
         var f = byId[l.fileId], o = ov[l.outPath];
-        return { rel: l.relPath, outPath: l.outPath, file: f, text: function () { return o ? o.text : (f && f.bytes ? ACE.bar.text(f) : null); }, changed: !!o };
-      });
+        return { rel: l.relPath, outPath: l.outPath, file: f, text: function () { return o ? o.text : (f && f.bytes ? ACE.bar.text(f) : null); }, changed: !!o, deleted: !!(o && o.deleted) };
+      }).filter(function (x) { return !x.deleted; }).concat((created[p.name] || []).filter(function (c) { return !L.files.some(function (l) { return l.outPath === c.outPath; }); }));
       var dotFile = files.filter(function (x) { return x.rel === '.project'; })[0], dotPath = p.name + '/.project', dotText, generated = false;
       if (dotFile) dotText = dotFile.text();
-      else if (ov[dotPath]) dotText = ov[dotPath].text;
-      else { var g = ACE.project.generatedProjectFile(ws, p, refsInferred); if (g && g.text) { dotText = g.text; generated = true; } }
+      else if (ov[dotPath] && !ov[dotPath].deleted) dotText = ov[dotPath].text;
+      else if (ws.inputKind !== 'workspace' && !p.created) { var g = ACE.project.generatedProjectFile(ws, p, refsInferred); if (g && g.text) { dotText = g.text; generated = true; } }
+      if (!dotText && ws.inputKind === 'workspace') return null; // project removed in this working copy
       var dp = dotText ? ACE.bar.parseDotProject(dotText) : null;
       var kind = dp && dp.natures.length ? kindFromNatures(dp.natures) : kindFromLayout(p.type);
       var descName = kind === 'application' ? 'application.descriptor' : /library/.test(kind) ? 'library.descriptor' : null;
       var descFile = descName ? files.filter(function (x) { return x.rel === descName; })[0] : null;
       var descPath = descName ? p.name + '/' + descName : null;
-      var descText = descFile ? descFile.text() : (descPath && ov[descPath] ? ov[descPath].text : null);
+      var descText = descFile ? descFile.text() : (descPath && ov[descPath] && !ov[descPath].deleted ? ov[descPath].text : null);
       return { name: p.name, layoutType: p.type, kind: kind, files: files, dot: { path: dotPath, text: dotText, generated: generated, parsed: dp }, desc: { path: descPath, name: descName, text: descText, exists: !!descText, refs: descText ? descriptorRefs(descText) : [] },
         refs: dp ? dp.projects.slice() : (refsInferred[p.name] || []).map(function (r) { return r.project; }), natures: dp ? dp.natures : [] };
-    });
+    }).filter(Boolean);
     var byName = {}; projects.forEach(function (p) { byName[p.name] = p; });
     return { copy: copy, projects: projects, byName: byName, duplicates: util.uniq(dup) };
   };
@@ -185,13 +195,34 @@
     return out;
   }
 
+  LC.emptyResult = function (copy) { return { copy: copy, target: copy === 'ws12' ? 'ace12' : 'ace13', strategy: 'in-place', libraries: [], projects: [], edits: [], warnings: [], errors: [], manualActions: [], notes: [], blockedCount: 0, converted: [] }; };
+
+  /* Edits touching the same path (e.g. delete + create when a project keeps its name) become one edit. */
+  LC.consolidate = function (edits) {
+    var by = {}, order = [];
+    edits.forEach(function (e) {
+      var cur = by[e.path];
+      if (!cur) { by[e.path] = e; order.push(e.path); return; }
+      // a delete and a create of the same path (any order) is a modification of that file
+      var del = cur.deleted ? cur : e.deleted ? e : null, cre = cur.created ? cur : e.created ? e : null;
+      if (del && cre) { by[e.path] = { path: e.path, project: cre.project, before: del.before, after: cre.after, bytesFrom: cre.bytesFrom, created: false, deleted: false, notes: cre.notes }; return; }
+      by[e.path] = { path: e.path, project: e.project, before: cur.before, after: e.after, bytesFrom: e.bytesFrom, created: cur.created, deleted: !!e.deleted, notes: cur.notes.concat(e.notes) };
+    });
+    return order.map(function (p) { return by[p]; }).filter(function (e) {
+      if (e.deleted || e.created) return true;
+      if (e.bytesFrom) return false; // binary file rewritten with itself
+      return e.after !== e.before;
+    }).map(function (e) { if (!e.diff && e.after != null && !e.bytesFrom) e.diff = ACE.diff.unified(e.before || '', e.after, 'a/' + e.path, 'b/' + e.path); else if (!e.diff) e.diff = e.deleted ? '(file removed: moved into the shared library)' : '(binary file)'; return e; });
+  };
+
   /* ---------- analysis / plan ---------- */
   LC.analyze = function (ws, cfg, copy) {
     cfg = Object.assign({}, LC.DEFAULTS, cfg || {});
     copy = copy || 'ws13';
+    if (cfg.strategy === 'refactor') { var rr = ACE.libref.analyze(ws, cfg, copy); rr.edits = LC.consolidate(rr.edits); return rr; }
     var st = LC.state(ws, copy), known = {};
     (cfg.knownSharedLibraries || []).forEach(function (n) { if (n) known[n] = true; });
-    var res = { copy: copy, target: copy === 'ws12' ? 'ace12' : 'ace13', libraries: [], projects: [], edits: [], warnings: [], errors: [], manualActions: [], blockedCount: 0 };
+    var res = LC.emptyResult(copy);
     var P = st.byName;
     function kindOfName(n) { return P[n] ? P[n].kind : known[n] ? 'shared-library (known, not in input)' : 'missing'; }
     var referencedBy = {};
@@ -321,9 +352,14 @@
   };
 
   /* Build and packaging commands for the converted workspace (run outside the browser). */
-  LC.buildPlan = function (st, res, willBeShared) {
+  LC.buildPlan = function (st, res, willBeShared, override) {
     var shared = st.projects.filter(function (p) { return willBeShared[p.name]; }).map(function (p) { return p.name; });
     var apps = st.projects.filter(function (p) { return p.kind === 'application'; });
+    if (override) {
+      (override.addProjects || []).forEach(function (n) { if (shared.indexOf(n) < 0) shared.push(n); });
+      var uses = {}; (override.apps || []).forEach(function (a) { uses[a.name] = a.uses; });
+      apps = apps.map(function (a) { return { name: a.name, refs: uses[a.name] || a.refs.filter(function (r) { return willBeShared[r]; }) }; });
+    }
     var lines = [], ver = res.target === 'ace12' ? window.ACE_VERSIONS.source : window.ACE_VERSIONS.target;
     if (shared.length) lines.push({ purpose: 'Shared libraries (deploy first, once per integration server)', command: 'ibmint package --input-path <workspace> --output-bar-file shared-libraries.bar ' + shared.map(function (n) { return '--project ' + n; }).join(' ') });
     apps.forEach(function (a) {
@@ -349,11 +385,13 @@
   LC.apply = function (ws, plan) {
     var copy = plan.copy, wc = ws[copy] = ws[copy] || { overlay: {}, changelog: [] }, applied = [];
     plan.edits.forEach(function (e) {
-      var cur = wc.overlay[e.path], curText = cur ? cur.text : (e.created ? '' : e.before);
-      if (curText !== e.before) throw new Error(e.path + ' changed since the plan was made; analyse again.');
-      var entry = { t: util.nowIso(), kind: LC.KIND, title: 'Library conversion: ' + e.notes.join('; '), notes: e.notes, before: e.before, after: e.after, created: e.created, unified: e.diff };
-      wc.overlay[e.path] = { text: e.after, origin: e.created ? 'generated' : 'transformed', history: (cur ? cur.history : []).concat([entry]) };
-      wc.changelog.push(Object.assign({ path: e.path, action: 'converted' }, entry));
+      var cur = wc.overlay[e.path], curText = cur ? (cur.deleted ? null : cur.text) : (e.created ? '' : e.before);
+      if (!e.created && !e.bytesFrom && curText !== e.before) throw new Error(e.path + ' changed since the plan was made; analyse again.');
+      var entry = { t: util.nowIso(), kind: LC.KIND, title: 'Library conversion: ' + e.notes.join('; '), notes: e.notes, before: e.before, after: e.after, created: e.created, deleted: !!e.deleted, unified: e.diff };
+      var o = { text: e.deleted ? null : e.after, deleted: !!e.deleted, origin: e.deleted ? 'deleted' : e.created ? 'generated' : 'transformed', history: (cur ? cur.history : []).concat([entry]) };
+      if (e.bytesFrom) { o.bytes = e.bytesFrom.bytes; o.text = null; }
+      wc.overlay[e.path] = o;
+      wc.changelog.push(Object.assign({ path: e.path, action: e.deleted ? 'removed' : e.created ? 'created' : 'converted' }, entry));
       applied.push(e.path);
     });
     ACE.log.ok('Library conversion applied to the ' + (copy === 'ws12' ? 'ACE 12' : 'ACE 13') + ' working copy: ' + plan.converted.length + ' library(ies), ' + applied.length + ' file(s) changed');
@@ -411,10 +449,86 @@
       var del = d.filter(function (x) { return x.op === '-'; }).length, add = d.filter(function (x) { return x.op === '+'; });
       if (del || add.length !== 1 || add[0].text.trim() !== '<nature>' + NAT.shared + '</nature>') stray.push(p + ' (unexpected change besides the shared nature)');
     });
-    check('V6', 'Only .project natures and descriptor references were changed; every other file is unchanged', stray);
+    if ((cfg && cfg.strategy) !== 'refactor') check('V6', 'Only .project natures and descriptor references were changed; every other file is unchanged', stray);
+    else check('V6', 'Refactoring touched only library files and the references to them (no unrelated file changed)', convPaths.filter(function (p) { return !/\.(project|descriptor|esql|subflow|msgflow)$/.test(p) && !ov[p].history.some(function (h) { return h.created || h.deleted; }); }));
+    // V8-V11: resolution rules observed on the ACE 13.0.2.0 runtime (docs/LIBRARY-CONVERSION.md section 5)
+    var defs = {}; // project -> {subflows: {ns:1}, modules: {schema#M:1}, routines: {SCHEMA.NAME:1}}
+    st.projects.forEach(function (p) {
+      var d = defs[p.name] = { subflows: {}, modules: {}, routines: {} };
+      p.files.forEach(function (f) {
+        if (/\.subflow$/i.test(f.rel)) { var t = f.text() || ''; var ns = (/\bnsURI="([^"]+)"/.exec(t) || [])[1]; if (ns) d.subflows[ns] = true; }
+        if (/\.esql$/i.test(f.rel)) { var sy = ACE.libref.esqlSymbols(f.text() || ''); sy.modules.forEach(function (m) { d.modules[sy.schema + '#' + m] = true; }); sy.routines.forEach(function (r) { d.routines[(sy.schema ? sy.schema + '.' : '') + r.toUpperCase()] = true; }); }
+      });
+    });
+    function scope(p) { // containers whose resources p can use
+      var out = [p.name], seenS = {}; seenS[p.name] = true;
+      (function walk(n) { var q = P[n]; if (!q) return; q.refs.forEach(function (r) { if (seenS[r] || !P[r]) return; var k = P[r].kind; if (k === 'shared-library' || (k === 'static-library' && p.kind !== 'shared-library')) { seenS[r] = true; out.push(r); walk(r); } }); })(p.name);
+      return out;
+    }
+    var v8 = [], v9 = [], v10 = [], v11 = [], preexisting = [];
+    // references that resolve nowhere in the input were already broken before the conversion: reported, not counted
+    var anySub = {}, anyMod = {};
+    Object.keys(defs).forEach(function (n) { Object.keys(defs[n].subflows).forEach(function (k) { anySub[k] = true; }); Object.keys(defs[n].modules).forEach(function (k) { anyMod[k] = true; anyMod['#' + k.split('#')[1]] = anyMod['#' + k.split('#')[1]] || false; }); });
+    var origDefs = LC.state(ws, '__original__');
+    origDefs.projects.forEach(function (p) { p.files.forEach(function (f) {
+      if (/\.subflow$/i.test(f.rel)) { var ns0 = (/\bnsURI="([^"]+)"/.exec(f.text() || '') || [])[1]; if (ns0) anySub['@orig:' + ns0] = true; }
+      if (/\.esql$/i.test(f.rel)) ACE.libref.esqlSymbols(f.text() || '').modules.forEach(function (m) { anyMod['@orig:' + m] = true; });
+    }); });
+    function existedBefore(kind, key) { return kind === 'module' ? !!anyMod['@orig:' + key.split('#')[1]] : !!anySub['@orig:' + util.basename(key)] || Object.keys(anySub).some(function (k) { return k.indexOf('@orig:') === 0 && util.basename(k.slice(6)) === util.basename(key); }); }
+    st.projects.forEach(function (p) {
+      if (!/application|library/.test(p.kind)) return;
+      var sc = scope(p), isShared = p.kind === 'shared-library';
+      p.files.forEach(function (f) {
+        if (/\.(msgflow|subflow)$/i.test(f.rel)) {
+          var t = f.text() || '', ns = {}, m, d = /xmlns:([\w.-]+)="([^"]+\.(?:subflow|msgflow))"/g;
+          while ((m = d.exec(t))) ns[m[1]] = m[2];
+          var re = /<nodes xmi:type="([\w.-]+):FCMComposite_1"([^>]*)>/g;
+          while ((m = re.exec(t))) {
+            var target = ns[m[1]]; if (!target) continue;
+            var owner = sc.filter(function (c) { return defs[c] && defs[c].subflows[target]; })[0];
+            if (!owner) {
+              if (!existedBefore('subflow', target)) { preexisting.push(f.outPath + ': subflow ' + target + ' (missing in the input before the conversion)'); continue; }
+              v8.push(f.outPath + ': subflow ' + target + ' not found in ' + (isShared ? 'this shared library (a shared library cannot use subflows of another shared library, BIP1360E)' : sc.join(', '))); continue;
+            }
+            if (isShared && owner !== p.name) v8.push(f.outPath + ': uses subflow ' + target + ' of shared library ' + owner + ' (BIP1360E)');
+            if (P[owner] && P[owner].kind === 'shared-library' && owner !== p.name) {
+              var a, ar = /(\w+)="esql:\/\/routine\/([\w.]*)#([^"#]+?)\.Main"/g;
+              while ((a = ar.exec(m[2]))) { var key = a[2] + '#' + a[3], ownerScope = scope(P[owner]); if (!ownerScope.some(function (c) { return defs[c] && defs[c].modules[key]; })) v9.push(f.outPath + ': passes module ' + key + ' (' + a[1] + ') into shared subflow ' + target + ' - not visible inside the shared library (BIP4127E)'); }
+            }
+          }
+          if (isShared) {
+            // bare defaults of ESQL-module promoted properties also resolve in the default schema
+            var dv = /<eStructuralFeatures\b[^>]*\bdefaultValueLiteral="([A-Za-z_][^"\s.#\/:]*)"[^>]*>\s*<eType[^>]*#\/\/EsqlModule"/g, dm;
+            while ((dm = dv.exec(t))) { if (existedBefore('module', '#' + dm[1])) v10.push(f.outPath + ': promoted property default "' + dm[1] + '" refers to a default-schema module'); }
+          }
+          var mr = /(\s)(computeExpression|filterExpression|statement)="([^"]*)"/g;
+          while ((m = mr.exec(t))) {
+            var v = m[3], mm = /^esql:\/\/routine\/([\w.]*)#([^"#]+?)\.Main$/.exec(v), bareRe = /^[A-Za-z_][^"\s.#\/:]*$/;
+            var bare = false;
+            if (!mm) { if (!bareRe.test(v)) continue; mm = [null, '', v]; bare = true; }
+            var k2 = mm[1] + '#' + mm[2];
+            if (!existedBefore('module', k2)) { preexisting.push(f.outPath + ': module ' + mm[2] + ' (' + m[2] + ') is not defined anywhere in the input (also before the conversion)'); continue; }
+            if (bare && isShared) v10.push(f.outPath + ': ' + m[2] + '="' + v + '" refers to a default-schema module');
+            if (!sc.some(function (c) { return defs[c] && defs[c].modules[k2]; })) v9.push(f.outPath + ': module ' + k2 + ' (' + m[2] + ') not found in ' + sc.join(', '));
+          }
+        }
+        if (/\.esql$/i.test(f.rel) && !isShared) {
+          var sy = ACE.libref.esqlSymbols(f.text() || ''), sharedRoutines = {};
+          sc.filter(function (c) { return P[c] && P[c].kind === 'shared-library'; }).forEach(function (c) { Object.keys(defs[c].routines).forEach(function (k) { var nm = k.split('.').pop(); if (k.indexOf('.') > 0) sharedRoutines[nm] = k; }); });
+          var own = {}; sc.filter(function (c) { return !P[c] || P[c].kind !== 'shared-library'; }).forEach(function (c) { Object.keys(defs[c] ? defs[c].routines : {}).forEach(function (k) { own[k.split('.').pop()] = true; }); });
+          var re2 = /([.\w]?)\b([A-Za-z_]\w*)\s*\(/g, c2;
+          while ((c2 = re2.exec(sy.code))) { var up = c2[2].toUpperCase(); if (c2[1] === '.' || /\w/.test(c2[1]) || !sharedRoutines[up] || own[up]) continue; if (/\b(FUNCTION|PROCEDURE)\s*$/i.test(sy.code.slice(Math.max(0, c2.index - 20), c2.index + 1))) continue; v11.push(f.outPath + ':' + util.lineAt(f.text(), c2.index) + ' calls ' + c2[2] + ' without its schema (' + sharedRoutines[up].split('.').slice(0, -1).join('.') + ')'); }
+        }
+      });
+    });
+    check('V8', 'Every subflow reference resolves; no shared library uses a subflow of another shared library', v8);
+    check('V9', 'Every ESQL module reference resolves; no application module is passed into a shared subflow', v9);
+    check('V10', 'No default-schema (bare) module references inside shared libraries', v10);
+    check('V11', 'Calls from applications to shared-library routines are schema-qualified', v11);
+    if (preexisting.length) checks.push({ id: 'V0', title: 'References that were already unresolved in the input (not caused by the conversion; fix them in the source)', status: 'WARN', problems: util.uniq(preexisting) });
     var again = LC.analyze(ws, cfg, copy);
     check('V7', 'Repeatable: analysing the converted copy again plans no further changes', again.edits.map(function (e) { return 'would change ' + e.path + ': ' + e.notes.join('; '); }));
-    return { copy: copy, at: util.nowIso(), checks: checks, passed: checks.every(function (c) { return c.status === 'PASS'; }), changedFiles: convPaths,
+    return { copy: copy, at: util.nowIso(), checks: checks, passed: checks.every(function (c) { return c.status !== 'FAIL'; }), changedFiles: convPaths,
       notPerformed: ['Compilation and BAR build (run the ibmint commands in the report with the ' + (copy === 'ws12' ? 'ACE ' + window.ACE_VERSIONS.source : 'ACE ' + window.ACE_VERSIONS.target) + ' installation)', 'Deployment and runtime tests: build success is not proof of runtime behaviour (e.g. ibmint packages default-schema ESQL that the runtime then rejects)'] };
   };
 
@@ -435,7 +549,7 @@
 
   /* ---------- reports ---------- */
   LC.reportJson = function (run) {
-    function slim(plan) { return plan && { libraries: plan.libraries, projects: plan.projects, converted: plan.converted, edits: plan.edits.map(function (e) { return { path: e.path, project: e.project, created: e.created, notes: e.notes, diff: e.diff }; }), warnings: plan.warnings, errors: plan.errors, manualActions: plan.manualActions, build: plan.build }; }
+    function slim(plan) { return plan && { strategy: plan.strategy, target: plan.target || null, hooks: plan.hooks || [], localCopies: plan.localCopies || {}, notes: plan.notes || [], libraries: plan.libraries, projects: plan.projects, converted: plan.converted, edits: plan.edits.map(function (e) { return { path: e.path, project: e.project, change: e.created ? 'created' : e.deleted ? 'removed' : 'modified', notes: e.notes, diff: e.created || e.deleted ? undefined : e.diff }; }), warnings: plan.warnings, errors: plan.errors, manualActions: plan.manualActions, build: plan.build }; }
     return Object.assign({}, run, { report: 'library-conversion', rules: LC.RULES, targets: run.targets.map(function (t) { return { target: t.target, version: t.version, plan: slim(t.plan), modifiedFiles: t.applied, validation: t.validation }; }) });
   };
   LC.reportText = function (run) {
@@ -451,9 +565,17 @@
         l.blockers.forEach(function (b) { L.push('- **' + b.code + '** (' + b.basis + '): ' + b.rule + ' ' + b.detail + '. Evidence: ' + b.evidence + (b.locations && b.locations.length ? ' Files: ' + b.locations.slice(0, 6).map(function (x) { return '`' + x.file + (x.line ? ':' + x.line : '') + '`'; }).join(', ') + (b.locations.length > 6 ? ' ...' : '') : '')); });
       });
       p.libraries.filter(function (l) { return l.coordination; }).forEach(function (l) { L.push('', '- ' + l.name + ': ' + l.coordination); });
-      L.push('', '### Files and references ' + (t.applied.length ? 'modified' : 'that would be modified'), '');
+      if (p.target && p.target.sharedLibrary) {
+        L.push('', '### Refactoring', '', '- Strategy: **refactor** - libraries ' + p.target.group.join(', ') + ' merged into shared library **' + p.target.sharedLibrary + '**, default-schema ESQL and subflows moved to schema `' + p.target.schema + '`.');
+        (p.hooks || []).forEach(function (h) { L.push('- Kept local to the applications (receives application ESQL modules: ' + h.properties.map(function (x) { return x.property; }).join(', ') + '; such hooks fail inside a shared library, BIP4127E verified): `' + h.subflow + '` -> `' + h.localNs + '`'); });
+        (p.notes || []).forEach(function (n) { L.push('- ' + n); });
+      }
+      L.push('', '### Files and references ' + (t.applied.length ? 'changed' : 'that would change') + ' (' + p.edits.length + ')', '');
       if (!p.edits.length) L.push('None.');
-      p.edits.forEach(function (e) { L.push('- `' + e.path + '`' + (e.created ? ' (new file)' : '') + ': ' + e.notes.join('; '), '', '```diff', e.diff, '```', ''); });
+      p.edits.filter(function (e) { return !e.created && !e.deleted; }).forEach(function (e) { L.push('- `' + e.path + '`: ' + e.notes.join('; '), '', '```diff', e.diff, '```', ''); });
+      var cr = p.edits.filter(function (e) { return e.created; }), dl = p.edits.filter(function (e) { return e.deleted; });
+      if (cr.length) { L.push('Created (' + cr.length + '):', ''); cr.forEach(function (e) { L.push('- `' + e.path + '`: ' + e.notes.join('; ')); }); L.push(''); }
+      if (dl.length) { L.push('Removed - moved into the shared library (' + dl.length + '):', ''); dl.forEach(function (e) { L.push('- `' + e.path + '`'); }); L.push(''); }
       if (p.warnings.length) { L.push('### Warnings', ''); p.warnings.forEach(function (w) { L.push('- ' + w); }); L.push(''); }
       if (p.errors.length) { L.push('### Errors', ''); p.errors.forEach(function (w) { L.push('- ' + w); }); L.push(''); }
       if (p.manualActions.length) { L.push('### Manual actions required', ''); p.manualActions.forEach(function (w) { L.push('- ' + w); }); L.push(''); }

@@ -20,7 +20,7 @@
 <p>Runs offline from <code>file://</code>. Synthetic fixtures are generated in memory. Tests needing the real BAR report <b>NOT RUN</b> with the reason when the prerequisite is missing. <b>EXTERNAL</b> tests need the IBM Toolkit/runtime and are never reported as passed here.</p>
 <div class="bar">
   <label>Real BAR (optional): <input type="file" id="bar" accept=".bar"></label>
-  <label>Real workspace ZIP (optional): <input type="file" id="wsZip" accept=".zip"></label>
+  <label>Real workspace ZIP(s) (optional): <input type="file" id="wsZip" accept=".zip" multiple></label>
   <button id="run">Run all tests</button> <button id="dl">Download results (JSON)</button>
   <span id="summary"></span>
 </div>
@@ -61,6 +61,7 @@
 <script src="../js/project/explorer-model.js"></script>
 <script src="../js/project/project-builder.js"></script>
 <script src="../js/project/library-conversion.js"></script>
+<script src="../js/project/library-refactor.js"></script>
 <script src="../js/report/reports.js"></script>
 <script src="../js/workflow.js"></script>
 <script>window.ACE.ui = { register: function () {} }; /* only validateRuleSet is needed from the Settings view */</script>
@@ -76,7 +77,7 @@
   ACE.settings.save = function () { return false; };
   T.render();
   async function env() {
-    var e = { barFile: document.getElementById('bar').files[0] || null, workspaceFile: document.getElementById('wsZip').files[0] || null };
+    var e = { barFile: document.getElementById('bar').files[0] || null, workspaceFile: document.getElementById("wsZip").files[0] || null, workspaceFiles: Array.prototype.slice.call(document.getElementById("wsZip").files) };
     return e;
   }
   window.runAll = async function () { T.results = {}; await T.run(null, await env()); return T.exportJson(); };

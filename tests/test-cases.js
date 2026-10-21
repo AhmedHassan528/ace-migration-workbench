@@ -573,11 +573,11 @@
   /* ---------- 12. static-to-shared library conversion ---------- */
   async function withLC(cfg, fn) {
     var keep = ACE.settings.current.libraryConversion;
-    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, cfg);
+    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, { strategy: "in-place" }, cfg);
     try { return await fn(); } finally { ACE.settings.current.libraryConversion = keep; }
   }
   async function lcLoad(spec, cfg, wrap) {
-    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, cfg);
+    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, { strategy: "in-place" }, cfg);
     return load(await Fx.libWorkspace(spec, wrap), 'lc.zip');
   }
   function lib(run, t, name) { return run.targets.filter(function (x) { return x.target === t; })[0].plan.libraries.filter(function (l) { return l.name === name; })[0]; }
@@ -751,7 +751,7 @@
     });
   });
   test('L12', 'BAR input: libraries inside the application archive are analysed with the same rules', { category: 'Library conversion' }, async function (a) {
-    await withLC({ enabled: true }, async function () {
+    await withLC({ enabled: true, strategy: "in-place" }, async function () {
       var ws = await load(await Fx.syntheticBar(), 'Demo.bar');
       var l = lib(ws.libConversion, 'ace13', 'CommonLIB');
       a.eq(l.currentType, 'static-library', 'CommonLIB (libzip inside the appzip) recognised as a static library');
@@ -759,7 +759,7 @@
     });
   });
   test('L13', 'Real workspace ZIP: conversion analysis reports what blocks the framework libraries; nothing is changed', { category: 'Library conversion', requires: 'workspace' }, async function (a, env) {
-    await withLC({ enabled: true }, async function () {
+    await withLC({ enabled: true, strategy: "in-place" }, async function () {
       var ws = await load(await util.readFileBytes(env.workspaceFile), env.workspaceFile.name);
       var p = ws.libConversion.targets[0].plan;
       p.libraries.forEach(function (l) { a.note(l.name + ': ' + l.decision + (l.blockers.length ? ' - ' + util.uniq(l.blockers.map(function (b) { return b.code; })).join(', ') : '')); });
@@ -772,7 +772,119 @@
     });
   });
 
-  /* ---------- 13. external validation ---------- */
+  /* ---------- 13. static-to-shared conversion with refactoring ---------- */
+  var RF = { enabled: true, strategy: 'refactor', sharedLibraryName: 'Fw', schema: 'fw' };
+  async function rfLoad(spec, cfg) { ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, RF, cfg || {}); return load(await Fx.libWorkspace(spec), 'fw.zip'); }
+  function plan13(ws) { return ws.libConversion.targets[0].plan; }
+  function cur(ws, p) { var o = ws.ws13.overlay[p]; return o && !o.deleted ? o.text : null; }
+
+  test('R01', 'Refactor plan: interdependent libraries merged into one shared library; application-hooked subflow kept local', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      var ws = await rfLoad(Fx.frameworkSpec()), p = plan13(ws);
+      a.eq(p.strategy, 'refactor', 'refactor strategy');
+      a.eq(p.target.group.join(','), 'AuditL,FwL', 'AuditL and FwL form one dependency group');
+      a.eq(p.target.sharedLibrary + ' / ' + p.target.schema, 'Fw / fw', 'target shared library and schema');
+      a.eq(p.hooks.map(function (h) { return h.subflow; }).join(','), 'FwSub.subflow', 'only FwSub receives an application module (AppHook); the AuditSub hook comes from the library itself and stays shared');
+      a.eq(JSON.stringify(p.localCopies), '{"App":["FwSub.subflow"]}', 'App gets a local copy of FwSub');
+      a.ok(p.libraries.every(function (l) { return l.decision === 'convert'; }), 'both libraries convert');
+      a.eq(p.errors.length + p.blockedCount, 0, 'no errors or blockers');
+    });
+  });
+  test('R02', 'Refactor apply: references, module names (bare, quoted, promoted defaults), schema, bundleName, calls and constants rewritten; validation passes', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      var ws = await rfLoad(Fx.frameworkSpec());
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(v.passed, 'validation: ' + v.checks.map(function (c) { return c.id + ' ' + c.status + (c.problems.length ? ' ' + c.problems.slice(0, 2).join(' | ') : ''); }).join('; '));
+      var dp = ACE.bar.parseDotProject(cur(ws, 'Fw/.project'));
+      a.ok(dp.natures.indexOf('com.ibm.etools.msgbroker.tooling.sharedLibraryNature') >= 0 && dp.name === 'Fw', 'Fw is a shared library project');
+      a.ok(/^BROKER SCHEMA fw\r?\n/.test(cur(ws, 'Fw/fw/Audit.esql')) && /^BROKER SCHEMA fw\r?\n/.test(cur(ws, 'Fw/fw/Common.esql')), 'default-schema ESQL moved into schema fw (folder fw/)');
+      var au = cur(ws, 'Fw/fw/AuditSub.subflow');
+      a.ok(/nsURI="fw\/AuditSub\.subflow"/.test(au) && /bundleName="fw\/AuditSub"/.test(au), 'subflow nsURI and translation bundleName carry the schema (runtime takes the schema from bundleName)');
+      a.ok(/computeExpression="esql:\/\/routine\/fw#Audit_Mod\.Main"/.test(au), 'bare computeExpression qualified');
+      a.ok(/filterExpression="esql:\/\/routine\/fw#Audit_Is\?\.Main"/.test(au), 'quoted module name with "?" qualified');
+      a.ok(/defaultValueLiteral="esql:\/\/routine\/fw#Audit_Mod\.Main"/.test(au), 'bare promoted-property default qualified');
+      var fs = cur(ws, 'Fw/fw/FwSub.subflow');
+      a.ok(/xmlns:fw_AuditSub\.subflow="fw\/AuditSub\.subflow"/.test(fs) && /xmi:type="fw_AuditSub\.subflow:FCMComposite_1"/.test(fs), 'nested subflow namespace and node type rewritten');
+      a.ok(/Hook="esql:\/\/routine\/fw#Fw_AuditHook\.Main"/.test(fs), 'library-to-library hook now points at the shared module');
+      var loc = cur(ws, 'App/fw/local/FwSub.subflow');
+      a.ok(loc && /nsURI="fw\/local\/FwSub\.subflow"/.test(loc) && /xmlns:fw_AuditSub\.subflow="fw\/AuditSub\.subflow"/.test(loc), 'local copy in the application nests the SHARED AuditSub');
+      var flow = cur(ws, 'App/App.msgflow');
+      a.ok(/"fw\/local\/FwSub\.subflow"/.test(flow) && /"fw\/FwPlain\.subflow"/.test(flow) && /AppHook="esql:\/\/routine\/#App_Hook\.Main"/.test(flow), 'application flow: hooked subflow -> local copy, other subflow -> shared, application hook unchanged');
+      var esql = cur(ws, 'App/App.esql');
+      a.ok(/CALL fw\.FwProc\(C1\)/.test(esql) && /PROCEDURE CopyEntireMessage\(\)/.test(esql), 'framework call qualified; module-local routine untouched');
+      var cst = cur(ws, 'App/Fw_Constants.esql');
+      a.ok(/DECLARE xsi NAMESPACE/.test(cst) && /DECLARE C1 CONSTANT/.test(cst) && !/Cache/.test(cst), 'namespace and constant used by the application copied (SHARED variable not copied)');
+      a.ok(ACE.libconv.descriptorRefs(cur(ws, 'App/application.descriptor')).join() === 'Fw', 'application descriptor references Fw');
+      var ap = ACE.bar.parseDotProject(cur(ws, 'App/.project'));
+      a.eq(ap.projects.join(','), 'Fw', '.project: FwL -> Fw, AuditL removed');
+      a.ok(ws.ws13.overlay['FwL/.project'].deleted && ws.ws13.overlay['AuditL/Audit.esql'].deleted, 'old library files removed from the working copy');
+    });
+  });
+  test('R03', 'Refactor export: new shared library and local copies in the package, old libraries only under _original-before-changes/', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      var ws = await rfLoad(Fx.frameworkSpec()); ACE.workflow.convertLibraries();
+      var z = await unzip((await ACE.workflow.exportPackage('ace13')).blob), names = Object.keys(z);
+      a.ok(names.indexOf('Fw/.project') >= 0 && names.indexOf('Fw/fw/AuditSub.subflow') >= 0 && names.indexOf('App/fw/local/FwSub.subflow') >= 0 && names.indexOf('App/Fw_Constants.esql') >= 0, 'new files exported');
+      a.ok(!names.some(function (n) { return /^(AuditL|FwL)\//.test(n); }), 'old library projects not exported as projects');
+      a.ok(names.indexOf('_original-before-changes/FwL/.project') >= 0 && names.indexOf('_original-before-changes/AuditL/AuditSub.subflow') >= 0, 'originals kept for rollback');
+      a.eq(names.filter(function (n) { return /^Fw\/jconn2\.jar$/.test(n); }).length, 1, 'identical jconn2.jar copies merged into one');
+      a.eq(util.decodeText(z['Fw/jconn2.jar']).text, 'JAR-BYTES', 'binary file copied byte-for-byte');
+      a.ok(z['_workbench/LIBRARY-CONVERSION-REPORT.md'] && /Refactoring/.test(util.decodeText(z['_workbench/LIBRARY-CONVERSION-REPORT.md']).text), 'report describes the refactoring');
+    });
+  });
+  test('R04', 'Refactor is repeatable and reversible: a second run changes nothing; Undo restores the original workspace', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      var ws = await rfLoad(Fx.frameworkSpec()); ACE.workflow.convertLibraries();
+      var n1 = Object.keys(ws.ws13.overlay).length;
+      var r2 = ACE.workflow.convertLibraries();
+      a.eq(r2.targets[0].applied.length, 0, 'second run applies nothing');
+      a.eq(Object.keys(ws.ws13.overlay).length, n1, 'working copy unchanged');
+      a.ok(r2.targets[0].validation.passed, 'still valid after the second run');
+      ACE.workflow.undoLibraryConversion();
+      a.eq(Object.keys(ws.ws13.overlay).length, 0, 'Undo removes every created, modified and removed-file entry');
+      a.eq(plan13(ws).target.group.join(','), 'AuditL,FwL', 'the original static libraries are back and can be converted again');
+    });
+  });
+  test('R05', 'Refactor blockers: SHARED variable used by the application, library calling application code, message flow in a library, missing project', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      function codes(ws) { var l = plan13(ws).libraries.filter(function (x) { return x.decision === 'blocked'; })[0]; return l ? l.blockers.map(function (b) { return b.code; }) : []; }
+      var ws = await rfLoad(Fx.frameworkSpec(function (s) { s[2].files['App.esql'] += '\nCREATE PROCEDURE UseCache() BEGIN SET Cache.x = 1; END;\n'; return s; }));
+      a.ok(codes(ws).indexOf('RF-CONSTANT-USE') >= 0 && plan13(ws).edits.length === 0, 'application using a library SHARED variable blocks (cannot be shared across schemas)');
+      ws = await rfLoad(Fx.frameworkSpec(function (s) { s[2].files['App.esql'] += '\nCREATE PROCEDURE AppOnly() BEGIN END;\n'; s[1].files['Common.esql'] += '\nCREATE PROCEDURE CallsApp() BEGIN CALL AppOnly(); END;\n'; return s; }));
+      a.ok(codes(ws).indexOf('RF-LIB-CALLS-APP') >= 0, 'library calling an application routine blocks');
+      ws = await rfLoad(Fx.frameworkSpec(function (s) { s[0].files['Main.msgflow'] = Fx.flowXml('Main.msgflow', {}); return s; }));
+      a.ok(codes(ws).indexOf('RF-MSGFLOW') >= 0, 'message flow inside a library blocks');
+      ws = await rfLoad(Fx.frameworkSpec(function (s) { s[2].refs = s[2].refs.concat(['PrimeLib']); return s; }));
+      a.ok(codes(ws).indexOf('RF-MISSING-PROJECT') >= 0 && plan13(ws).edits.length === 0, 'missing referenced project blocks the whole run');
+    });
+  });
+  test('R06', 'Single library keeps its name: refactor reduces to the minimal change when nothing needs to move', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, { enabled: true, strategy: 'refactor' });
+      var ws = await load(await Fx.libWorkspace([{ name: 'App1', kind: 'app', refs: ['Lib1'] }, { name: 'Lib1', kind: 'static' }]), 'one.zip');
+      var e = plan13(ws).edits.map(function (x) { return x.path; }).sort().join(',');
+      a.eq(e, 'App1/application.descriptor,Lib1/.project', 'only the shared nature and the descriptor reference change (same as the type-change strategy)');
+    });
+  });
+  test('R07', 'Real workspace ZIP(s): refactor plan; ContentCreate converts, valleysoft is blocked by its missing PrimeLib', { category: 'Library conversion (refactor)', requires: 'workspace' }, async function (a, env) {
+    var files = env.workspaceFiles && env.workspaceFiles.length ? env.workspaceFiles : [env.workspaceFile];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      await withLC({ enabled: true, strategy: 'refactor', sharedLibraryName: 'ADIBFramework', schema: 'adib.framework' }, async function () {
+        var ws = await load(await util.readFileBytes(f), f.name), p = plan13(ws);
+        a.note(f.name + ': ' + p.libraries.map(function (l) { return l.name + '=' + l.decision; }).join(', ') + '; hooks ' + (p.hooks || []).map(function (h) { return h.subflow; }).join(', ') + '; edits ' + p.edits.length);
+        if (/ContentCreate/i.test(f.name)) {
+          a.ok(p.blockedCount === 0 && p.edits.length > 100, 'ContentCreate: all four libraries merge into ADIBFramework (' + p.edits.length + ' file operations)');
+          var run = ACE.workflow.convertLibraries();
+          a.ok(run.targets[0].validation.passed, 'ContentCreate: validation ' + run.targets[0].validation.checks.map(function (c) { return c.id + ' ' + c.status; }).join(', '));
+        } else if (/valleysoft/i.test(f.name)) {
+          a.ok(p.libraries.some(function (l) { return l.blockers.some(function (b) { return b.code === 'RF-MISSING-PROJECT' && /PrimeLib/.test(b.detail); }); }), 'valleysoft: blocked until PrimeLib is part of the input');
+        } else a.ok(true, 'analysed');
+      });
+    }
+  });
+
+  /* ---------- 14. external validation ---------- */
   test('X01', 'ACE 12.0.5 Toolkit imports the ACE 12 package and builds without errors', { category: 'IBM Toolkit validation', external: true });
   test('X02', 'ACE 13.0.8 Toolkit imports the ACE 13 package; Java project builds; BAR can be built', { category: 'IBM Toolkit validation', external: true });
   test('X03', 'BAR rebuilt in ACE 13 deploys to an ACE 13.0.8 integration server (Java 17) and passes regression tests', { category: 'IBM runtime validation', external: true });

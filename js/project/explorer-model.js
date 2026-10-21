@@ -202,7 +202,7 @@
   /* Current content of a file in a copy: 'orig' | 'ws12' | 'ws13'. Returns Uint8Array or string. */
   EX.read = function (ws, leaf, copy) {
     var overlay = copy === 'ws12' ? ws.ws12.overlay : copy === 'ws13' ? ws.ws13.overlay : null;
-    if (overlay && overlay[leaf.path]) return overlay[leaf.path].text;
+    if (overlay && overlay[leaf.path]) { var o = overlay[leaf.path]; return o.deleted ? null : (o.bytes || o.text); }
     if (leaf.src === 'bar') return leaf.rec.bytes;
     if (leaf.src === 'toolkit-project') { var g = ACE.project.generatedProjectFile(ws, leaf.projectRef, ACE.project.references(ws, ws.facts)); return g ? g.text : ''; }
     if (leaf.src === 'java') {
@@ -228,7 +228,9 @@
    * once, readable, CRC-correct and byte-identical to the content that was written. */
   EX.exportZip = async function (ws, leafList, copy, progress) {
     var t0 = Date.now(), w = new ACE.zip.Writer(), expected = {}, total = 0, errors = [];
+    var ovl = copy === 'ws12' ? ws.ws12.overlay : copy === 'ws13' ? ws.ws13.overlay : {};
     leafList.forEach(function (l) {
+      if (ovl[l.path] && ovl[l.path].deleted) return; // removed in this working copy
       var b = EX.readBytes(ws, l, copy);
       if (b == null) { errors.push('no content for ' + l.path); return; }
       if (expected[l.path]) return;

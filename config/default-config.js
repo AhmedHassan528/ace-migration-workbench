@@ -20,5 +20,7 @@ window.ACE_DEFAULT_CONFIG = {
   // to the migration workflow. targets: ace12 and/or ace13 working copy; libraries: "auto" (all static
   // libraries) or a list of names; knownSharedLibraries: libraries that are already shared elsewhere.
   // The original source is always preserved (changes go to the working copy, originals are exported).
-  libraryConversion: { enabled: false, targets: ["ace13"], libraries: "auto", knownSharedLibraries: [], validateAfterConversion: true },
+  // strategy: "refactor" (merge + move into a named schema + keep application-hooked subflows local) or
+  // "in-place" (type change only, for libraries that are already valid shared libraries).
+  libraryConversion: { enabled: false, targets: ["ace13"], strategy: "refactor", sharedLibraryName: "", schema: "", libraries: "auto", knownSharedLibraries: [], validateAfterConversion: true },
 };

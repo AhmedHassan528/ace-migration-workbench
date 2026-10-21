@@ -163,7 +163,12 @@
       if (!f) continue;
       if (!f.bytes) { manifest.push({ path: l.outPath, origin: 'missing', sourceVPath: f.vpath, note: 'NOT EXPORTED: ' + (f.extractError || 'no data') }); continue; }
       var ov = overlay[l.outPath];
-      if (ov) {
+      if (ov && ov.deleted) {
+        // removed in the working copy (e.g. moved into a shared library by the library conversion)
+        put('_original-before-changes/' + l.outPath, f.bytes, { origin: 'original', sourceVPath: f.vpath, sha256: f.sha256, note: 'original of a file removed in this package' });
+        manifest.push({ path: l.outPath, origin: 'removed', note: ov.history.map(function (h) { return h.title; }).join('; ') });
+        changed.push(l.outPath);
+      } else if (ov) {
         put('_original-before-changes/' + l.outPath, f.bytes, { origin: 'original', sourceVPath: f.vpath, sha256: f.sha256, note: 'unchanged copy of a file modified in this package' });
         put(l.outPath, ov.text, { origin: ov.origin || 'transformed', sourceVPath: f.vpath, note: ov.history.map(function (h) { return h.kind + ': ' + h.title; }).join('; ') });
         changed.push(l.outPath);
@@ -185,7 +190,8 @@
     Object.keys(overlay).forEach(function (path) {
       var o = overlay[path];
       if (w.has(path) || !o.history.length || !o.history[0].created) return;
-      put(path, o.text, { origin: 'generated', note: o.history.map(function (h) { return h.title; }).join('; ') });
+      if (o.deleted) return;
+      put(path, o.bytes || o.text, { origin: 'generated', note: o.history.map(function (h) { return h.title; }).join('; ') });
       changed.push(path);
     });
     // 3. Eclipse Java projects for decompiled / imported JARs (src, bin, Lib, .project, .classpath, .settings)

@@ -164,6 +164,38 @@
     return Fx.rawZip(entries);
   };
 
+  /* A framework like the real ones: two static libraries in the DEFAULT schema, cross-library nesting,
+   * a library-to-library hook, an application hook, bare and quoted module references, namespace and
+   * constant declarations used by the application, and an unqualified application call. */
+  Fx.flowXml = function (ns, opts) {
+    opts = opts || {};
+    var x = ['<?xml version="1.0" encoding="UTF-8"?>', '<ecore:EPackage xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:ComIbmCompute.msgnode="ComIbmCompute.msgnode" xmlns:ComIbmFilter.msgnode="ComIbmFilter.msgnode" ' + (opts.uses || []).map(function (u) { return 'xmlns:' + u.prefix + '="' + u.ns + '" '; }).join('') + 'xmlns:ecore="http://www.eclipse.org/emf/2002/Ecore" xmlns:eflow="http://www.ibm.com/wbi/2005/eflow" xmlns:utility="http://www.ibm.com/wbi/2005/eflow_utility" nsURI="' + ns + '" nsPrefix="' + ns + '">', '<eClassifiers xmi:type="eflow:FCMComposite" name="FCMComposite_1">', '<eSuperTypes href="http://www.ibm.com/wbi/2005/eflow#//FCMBlock"/>'];
+    (opts.props || []).forEach(function (p) { x.push('<eStructuralFeatures xmi:type="ecore:EAttribute" xmi:id="Property.' + p.name + '" name="' + p.name + '"  defaultValueLiteral="' + p.def + '">', '  <eType xmi:type="ecore:EDataType" href="http://www.ibm.com/wbi/2005/eflow#//EsqlModule"/>', '</eStructuralFeatures>'); });
+    x.push('<translation xmi:type="utility:TranslatableString" key="' + ns.replace(/\.(sub|msg)flow$/, '') + '" bundleName="' + ns.replace(/\.(sub|msg)flow$/, '') + '" pluginId="flowAPIgenerated"/>', '<composition>');
+    (opts.nodes || []).forEach(function (n, i) { x.push('<nodes xmi:type="' + n.type + ':FCMComposite_1" xmi:id="FCMComposite_1_' + (i + 1) + '" location="' + (i * 100) + ',10"' + Object.keys(n.attrs || {}).map(function (k) { return ' ' + k + '="' + n.attrs[k] + '"'; }).join('') + '><translation xmi:type="utility:ConstantString" string="N' + (i + 1) + '"/></nodes>'); });
+    x.push('</composition>', '<propertyOrganizer/>');
+    (opts.links || []).forEach(function (l) { x.push('<attributeLinks promotedAttribute="Property.' + l.prop + '" overriddenNodes="FCMComposite_1_' + l.node + '">', '<overriddenAttribute href="' + l.href + '"/>', '</attributeLinks>'); });
+    x.push('<stickyBoard/>', '</eClassifiers>', '</ecore:EPackage>', '');
+    return x.join('\n');
+  };
+  Fx.frameworkSpec = function (extra) {
+    var spec = [
+      { name: 'AuditL', kind: 'static', files: {
+        'Audit.esql': 'CREATE COMPUTE MODULE Audit_Mod\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n\t\tRETURN TRUE;\n\tEND;\nEND MODULE;\n\nCREATE FILTER MODULE "Audit_Is?"\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n\t\tRETURN TRUE;\n\tEND;\nEND MODULE;\n\nCREATE PROCEDURE AuditLog(IN m CHARACTER) BEGIN END;\n',
+        'AuditSub.subflow': Fx.flowXml('AuditSub.subflow', { props: [{ name: 'Hook', def: 'Audit_Mod' }], nodes: [{ type: 'ComIbmCompute.msgnode', attrs: { computeExpression: 'Audit_Mod' } }, { type: 'ComIbmFilter.msgnode', attrs: { filterExpression: 'esql://routine/#Audit_Is?.Main' } }], links: [{ prop: 'Hook', node: 1, href: 'ComIbmCompute.msgnode#Property.computeExpression' }] }),
+        'jconn2.jar': 'JAR-BYTES' } },
+      { name: 'FwL', kind: 'static', refs: ['AuditL'], files: {
+        'Common.esql': 'DECLARE xsi NAMESPACE \'http://www.w3.org/2001/XMLSchema-instance\';\nDECLARE C1 CONSTANT CHARACTER \'one\';\nDECLARE Cache SHARED ROW;\n\nCREATE PROCEDURE FwProc(IN v CHARACTER) BEGIN CALL AuditLog(v); END;\n\nCREATE COMPUTE MODULE Fw_Default\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n\t\tRETURN TRUE;\n\tEND;\nEND MODULE;\n\nCREATE COMPUTE MODULE Fw_AuditHook\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n\t\tRETURN TRUE;\n\tEND;\nEND MODULE;\n',
+        'FwSub.subflow': Fx.flowXml('FwSub.subflow', { uses: [{ prefix: 'AuditSub.subflow', ns: 'AuditSub.subflow' }], props: [{ name: 'AppHook', def: 'esql://routine/#Fw_Default.Main' }], nodes: [{ type: 'ComIbmCompute.msgnode', attrs: { computeExpression: 'esql://routine/#Fw_Default.Main' } }, { type: 'AuditSub.subflow', attrs: { Hook: 'esql://routine/#Fw_AuditHook.Main' } }], links: [{ prop: 'AppHook', node: 1, href: 'ComIbmCompute.msgnode#Property.computeExpression' }] }),
+        'FwPlain.subflow': Fx.flowXml('FwPlain.subflow', { uses: [{ prefix: 'AuditSub.subflow', ns: 'AuditSub.subflow' }], nodes: [{ type: 'AuditSub.subflow', attrs: {} }] }),
+        'jconn2.jar': 'JAR-BYTES' } },
+      { name: 'App', kind: 'app', refs: ['FwL', 'AuditL'], files: {
+        'App.esql': 'CREATE COMPUTE MODULE App_Hook\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n\t\tCALL FwProc(C1);\n\t\tSET OutputRoot.XMLNSC.a.(XMLNSC.Attribute)xsi:type = \'t\';\n\t\tRETURN TRUE;\n\tEND;\n\n\tCREATE PROCEDURE CopyEntireMessage() BEGIN SET OutputRoot = InputRoot; END;\nEND MODULE;\n',
+        'App.msgflow': Fx.flowXml('App.msgflow', { uses: [{ prefix: 'FwSub.subflow', ns: 'FwSub.subflow' }, { prefix: 'FwPlain.subflow', ns: 'FwPlain.subflow' }], nodes: [{ type: 'FwSub.subflow', attrs: { AppHook: 'esql://routine/#App_Hook.Main' } }, { type: 'FwPlain.subflow', attrs: {} }] }) } }
+    ];
+    return extra ? extra(spec) : spec;
+  };
+
   Fx.syntheticWorkspace = async function () {
     var MB = 'com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature';
     var prodJar = await Fx.jar({
