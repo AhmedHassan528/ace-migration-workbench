@@ -127,6 +127,43 @@
   Fx.WS_JAVA = 'package p;\n\nimport java.io.FileInputStream;\nimport com.ibm.broker.plugin.MbGlobalMap;\nimport com.ibm.misc.BASE64Encoder;\n\npublic class Util {\n   public static String CHARSET = "utf-8";\n   private static final java.util.HashMap<String, String> CACHE = new java.util.HashMap<String, String>();\n   public static final int MAX = 3;\n\n   public static String enc(byte[] b) {\n      BASE64Encoder encoder = new BASE64Encoder();\n      return encoder.encode(b);\n   }\n\n   public static int leak(String f) throws Exception {\n      FileInputStream fis = new FileInputStream(f);\n      int c = fis.read();\n      fis.close();\n      return c;\n   }\n\n   public static int safe(String f) throws Exception {\n      try (FileInputStream in = new FileInputStream(f)) {\n         return in.read();\n      }\n   }\n\n   public static Object cached() throws Exception {\n      MbGlobalMap m = MbGlobalMap.getGlobalMap("M");\n      Object v = m.get("k");\n      if (v == null) { v = "x"; m.put("k", v); }\n      return v;\n   }\n}\n';
   Fx.WS_NODE = 'package p;\n\nimport com.ibm.broker.javacompute.MbJavaComputeNode;\nimport com.ibm.broker.plugin.MbMessageAssembly;\n\npublic class Node extends MbJavaComputeNode {\n   private int count;\n   private final String name = "n";\n\n   public void evaluate(MbMessageAssembly a) {\n      count++;\n   }\n}\n';
   Fx.WS_ESQL = 'DECLARE CacheA SHARED ROW;\nDECLARE CacheB SHARED ROW;\n\nCREATE COMPUTE MODULE Lib_Compute\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n\t\tIF CacheA.T IS NULL THEN\n\t\t\tSET CacheA.T = CURRENT_TIMESTAMP;\n\t\tEND IF;\n\t\tL1: BEGIN ATOMIC\n\t\t\tSET CacheB.T = CURRENT_TIMESTAMP;\n\t\tEND L1;\n\t\t-- SET CacheB.X = 1;  (commented out: must not count)\n\t\tRETURN TRUE;\n\tEND;\nEND MODULE;\n';
+  /* Library-conversion workspaces. spec: [{name, kind: app|static|shared|integration|java|mset, refs: [], descRefs: [], files: {rel: text}, noDescriptor}]
+   * A library without explicit files gets a valid shared-library layout: ESQL and a subflow in the
+   * non-default schema com.<name lowercased>. */
+  var NATURES = {
+    app: ['com.ibm.etools.msgbroker.tooling.applicationNature', 'com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature'],
+    static: ['com.ibm.etools.msgbroker.tooling.libraryNature', 'com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature'],
+    shared: ['com.ibm.etools.msgbroker.tooling.libraryNature', 'com.ibm.etools.msgbroker.tooling.sharedLibraryNature', 'com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature'],
+    integration: ['com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature'],
+    java: ['org.eclipse.jdt.core.javanature'],
+    mset: ['com.ibm.etools.msg.validation.msetnature']
+  };
+  Fx.descriptor = function (kind, refs) {
+    var r = refs && refs.length ? '<references>' + refs.map(function (x) { return '<sharedLibraryReference><libraryName>' + x + '</libraryName></sharedLibraryReference>'; }).join('') + '</references>' : '<references/>';
+    return kind === 'app' ? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><ns2:appDescriptor xmlns="http://com.ibm.etools.mft.descriptor.base" xmlns:ns2="http://com.ibm.etools.mft.descriptor.app">' + r + '</ns2:appDescriptor>'
+      : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><ns2:libDescriptor xmlns="http://com.ibm.etools.mft.descriptor.base" xmlns:ns2="http://com.ibm.etools.mft.descriptor.lib">' + r + '</ns2:libDescriptor>';
+  };
+  Fx.libSubflow = function (nsUri) {
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<ecore:EPackage xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:ecore="http://www.eclipse.org/emf/2002/Ecore" xmlns:eflow="http://www.ibm.com/wbi/2005/eflow" nsURI="' + nsUri + '" nsPrefix="' + nsUri + '">\n<eClassifiers xmi:type="eflow:FCMComposite" name="FCMComposite_1"><composition/></eClassifiers>\n</ecore:EPackage>\n';
+  };
+  Fx.libWorkspace = async function (spec, wrap) {
+    var entries = [], R = wrap === false ? '' : 'ws/';
+    spec.forEach(function (p) {
+      var kind = p.kind;
+      entries.push({ name: R + p.name + '/.project', data: Fx.dotProject(p.name, p.refs || [], NATURES[kind]) });
+      if ((kind === 'app' || kind === 'static' || kind === 'shared') && !p.noDescriptor) entries.push({ name: R + p.name + '/' + (kind === 'app' ? 'application' : 'library') + '.descriptor', data: Fx.descriptor(kind, p.descRefs) });
+      var files = p.files;
+      if (!files && (kind === 'static' || kind === 'shared')) {
+        var s = 'com/' + p.name.toLowerCase();
+        files = {}; files[s + '/Util.esql'] = 'BROKER SCHEMA com.' + p.name.toLowerCase() + '\n\nCREATE PROCEDURE ' + p.name + '_P() BEGIN END;\n';
+        files[s + '/Common.subflow'] = Fx.libSubflow(s + '/Common.subflow');
+      }
+      if (!files && kind === 'app') { files = {}; files[p.name + '.esql'] = 'CREATE COMPUTE MODULE ' + p.name + '_Compute\n\tCREATE FUNCTION Main() RETURNS BOOLEAN\n\tBEGIN\n' + (p.refs || []).map(function (r) { return '\t\tCALL com.' + r.toLowerCase() + '.' + r + '_P();\n'; }).join('') + '\t\tRETURN TRUE;\n\tEND;\nEND MODULE;\n'; }
+      Object.keys(files || {}).forEach(function (rel) { entries.push({ name: R + p.name + '/' + rel, data: files[rel], method: 8 }); });
+    });
+    return Fx.rawZip(entries);
+  };
+
   Fx.syntheticWorkspace = async function () {
     var MB = 'com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature';
     var prodJar = await Fx.jar({

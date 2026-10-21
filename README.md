@@ -147,12 +147,16 @@ Details, rule sources and evidence: [docs/MIGRATION-12.0.5-TO-13.0.8.md](docs/MI
 - **Reports:** `MIGRATION-REPORT.json` and `MIGRATION-REPORT.md` (human-readable) include **unresolved risks**, **unverified assumptions** and a validation section that lists what was and was not performed.
 - **Fixes:** only verified, deterministic fixes are suggested, each with a diff and an **Accept and replace…** button (in the findings table and under "All suggested solutions"). For `BASE64Encoder` you choose between two options: an exact equivalent that keeps the old line breaks (recommended), or the single-line `java.util.Base64` encoder. Accepting one withdraws the other. The original stays untouched, a copy is exported under `_original-before-changes/`, and Undo restores it.
 
+## 6c. Static-to-shared library conversion (optional)
+
+**8. Shared Libraries** converts static libraries into ACE shared libraries for ACE 12 and/or 13, so a framework change is deployed once instead of rebuilding every service. It is off by default; when off, nothing changes. It follows the real ACE semantics, verified with the Toolkit classes, `ibmint` and a runtime: the `sharedLibraryNature`, a `<sharedLibraryReference>` in every consuming descriptor, a separate `.shlibzip`, and the content and reference rules. It changes only `.project` natures and descriptors, preserves the originals, can be undone, is repeatable, validates the result and writes a conversion report with `ibmint` build commands. Libraries that IBM does not allow to be shared (e.g. ESQL in the default schema) are reported with evidence, never forced. Details and evidence: [docs/LIBRARY-CONVERSION.md](docs/LIBRARY-CONVERSION.md).
+
 ## 7. Tests
 
 Open `tests/index.html`, optionally select the real BAR, and press **Run all tests**.
-- 37 executable tests, using real `javac` bytecode embedded as fixtures. W01–W07 and W09 use a synthetic workspace ZIP; W08 uses a real one (optional, like the real BAR).
+- 50 executable tests, using real `javac` bytecode embedded as fixtures. W01–W07, W09 and L01–L12 use synthetic workspace ZIPs; W08 and L13 use a real one (optional, like the real BAR).
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with a real BAR and a real workspace ZIP: **37 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
+- Recorded run from `file://` (headless Chrome) with a real BAR and a real workspace ZIP: **50 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
 
 ## 8. Structure
 
@@ -163,7 +167,7 @@ js/archive/      crc32, zip-reader, zip-writer, classify, bar-engine
 js/java/         classfile (full class-file parser), jar-analyzer (inspection + driver detection)
 js/decompiler/   bytecode, types, ir, translate, structure, passes, syntax-check, decompiler
 js/analysis/     msgflow-parser, esql-parser, java17-analyzer, ace-rule-engine, premigration, migration-scanner
-js/project/      eclipse-project, explorer-model, project-builder, transforms, diff
+js/project/      eclipse-project, explorer-model, project-builder, transforms, diff, library-conversion
 js/report/       reports (JSON + standalone HTML)
 js/workflow.js   pipeline shared by UI and tests
 js/ui/           views

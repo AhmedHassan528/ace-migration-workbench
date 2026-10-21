@@ -570,7 +570,209 @@
     a.ok(r.verified && r.files === lay.files.length + lay.unassigned.length + lay.metadata.length, 'project backup ZIP verified: ' + r.files + ' files');
   });
 
-  /* ---------- 12. external validation ---------- */
+  /* ---------- 12. static-to-shared library conversion ---------- */
+  async function withLC(cfg, fn) {
+    var keep = ACE.settings.current.libraryConversion;
+    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, cfg);
+    try { return await fn(); } finally { ACE.settings.current.libraryConversion = keep; }
+  }
+  async function lcLoad(spec, cfg, wrap) {
+    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, cfg);
+    return load(await Fx.libWorkspace(spec, wrap), 'lc.zip');
+  }
+  function lib(run, t, name) { return run.targets.filter(function (x) { return x.target === t; })[0].plan.libraries.filter(function (l) { return l.name === name; })[0]; }
+  function ovText(ws, copy, p) { var o = ws[copy].overlay[p]; return o ? o.text : null; }
+  function origText(ws, rel) { var f = ws.files.filter(function (x) { return x.path === 'ws/' + rel; })[0]; return f ? ACE.bar.text(f) : null; }
+  var SHARED_NATURE = '<nature>com.ibm.etools.msgbroker.tooling.sharedLibraryNature</nature>';
+
+  test('L01', 'Single application + one static library: converted; only .project nature and descriptor reference change; validation passes', { category: 'Library conversion' }, async function (a) {
+    await withLC({ enabled: true }, async function () {
+      var ws = await lcLoad([{ name: 'App1', kind: 'app', refs: ['Lib1'] }, { name: 'Lib1', kind: 'static' }], { enabled: true });
+      var plan = ws.libConversion; a.eq(lib(plan, 'ace13', 'Lib1').decision, 'convert', 'Lib1 planned for conversion');
+      a.eq(plan.targets[0].plan.edits.map(function (e) { return e.path; }).join(','), 'App1/application.descriptor,Lib1/.project', 'exactly two files planned');
+      var run = ACE.workflow.convertLibraries(), t = run.targets[0];
+      a.ok(t.validation.passed, 'validation: ' + t.validation.checks.map(function (c) { return c.id + ' ' + c.status; }).join(', '));
+      var dp = ACE.bar.parseDotProject(ovText(ws, 'ws13', 'Lib1/.project'));
+      a.eq(dp.natures.join(','), 'com.ibm.etools.msgbroker.tooling.libraryNature,com.ibm.etools.msgbroker.tooling.sharedLibraryNature,com.ibm.etools.msgbroker.tooling.messageBrokerProjectNature', 'natures as the ACE Toolkit creates a shared library');
+      a.eq(ACE.libconv.descriptorRefs(ovText(ws, 'ws13', 'App1/application.descriptor')).join(','), 'Lib1', 'application.descriptor has <sharedLibraryReference> Lib1');
+      a.ok(/<references><sharedLibraryReference><libraryName>Lib1<\/libraryName><\/sharedLibraryReference><\/references>/.test(ovText(ws, 'ws13', 'App1/application.descriptor')), 'descriptor XML exactly as ibmint/Toolkit BARs contain it');
+      var z = await unzip((await ACE.workflow.exportPackage('ace13')).blob);
+      var others = Object.keys(z).filter(function (p) { return /^(App1|Lib1)\//.test(p) && !/(\.project|application\.descriptor)$/.test(p); });
+      a.ok(others.length >= 3 && others.every(function (p) { var o = ws.files.filter(function (f) { return f.path === 'ws/' + p; })[0]; return o && util.bytesEqual(o.bytes, z[p]); }), others.length + ' other files byte-identical to the input');
+      a.ok(util.bytesEqual(z['_original-before-changes/Lib1/.project'], ws.files.filter(function (f) { return f.path === 'ws/Lib1/.project'; })[0].bytes), 'original .project preserved under _original-before-changes/');
+      a.ok(z['_workbench/LIBRARY-CONVERSION-REPORT.json'] && /Lib1/.test(util.decodeText(z['_workbench/LIBRARY-CONVERSION-REPORT.md']).text), 'conversion report (JSON + Markdown) in the package');
+      a.ok(/--project Lib1/.test(t.state.build.commands.map(function (c) { return c.command; }).join('\n')), 'build plan packages the shared library with its own --project');
+    });
+  });
+  test('L02', 'Application using several libraries; dependency rules pull in referenced and referencing static libraries', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      // App -> A -> B (static chain), App -> C; X (static) -> A. Selecting only A must also convert B (A shared -> B shared) and X (X static cannot reference shared A).
+      var ws = await lcLoad([{ name: 'App', kind: 'app', refs: ['A', 'C'] }, { name: 'A', kind: 'static', refs: ['B'] }, { name: 'B', kind: 'static' }, { name: 'C', kind: 'static' }, { name: 'X', kind: 'static', refs: ['A'] }], { enabled: true, libraries: ['A'] });
+      var p = ws.libConversion;
+      a.eq(lib(p, 'ace13', 'A').decision, 'convert', 'A selected'); a.ok(/shared library can only reference shared/.test(lib(p, 'ace13', 'B').reasons.join()), 'B added: ' + lib(p, 'ace13', 'B').reasons);
+      a.ok(/static library cannot reference a shared/.test(lib(p, 'ace13', 'X').reasons.join()), 'X added: ' + lib(p, 'ace13', 'X').reasons);
+      a.eq(lib(p, 'ace13', 'C').decision, 'not-selected', 'C not selected and not required');
+      ACE.workflow.convertLibraries();
+      a.eq(ACE.libconv.descriptorRefs(ovText(ws, 'ws13', 'A/library.descriptor')).join(','), 'B', 'shared A lists shared B in its library.descriptor (runtime needs it: BIP2558E otherwise)');
+      a.eq(ACE.libconv.descriptorRefs(ovText(ws, 'ws13', 'X/library.descriptor')).join(','), 'A', 'X lists A');
+      a.eq(ACE.libconv.descriptorRefs(ovText(ws, 'ws13', 'App/application.descriptor')).join(','), 'A', 'App lists only the shared library it references (C stays static)');
+      a.ok(ws.libConversionRun.targets[0].validation.passed, 'validation passed');
+    });
+  });
+  test('L03', 'Several applications referencing a common library are updated together; coordination reported', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var ws = await lcLoad([{ name: 'SvcA', kind: 'app', refs: ['Framework'] }, { name: 'SvcB', kind: 'app', refs: ['Framework'] }, { name: 'SvcC', kind: 'app', refs: ['Framework'] }, { name: 'Framework', kind: 'static' }], { enabled: true });
+      var l = lib(ws.libConversion, 'ace13', 'Framework');
+      a.eq(l.referencingApplications.join(','), 'SvcA,SvcB,SvcC', 'all referencing applications identified');
+      a.ok(/static copy keep working/.test(l.coordination), 'coordination note: ' + l.coordination.slice(0, 90));
+      a.ok(l.usage.filter(function (u) { return u.kind === 'esql-call'; }).length === 3, 'ESQL calls into the library found in each service');
+      ACE.workflow.convertLibraries();
+      a.ok(['SvcA', 'SvcB', 'SvcC'].every(function (s) { return ACE.libconv.descriptorRefs(ovText(ws, 'ws13', s + '/application.descriptor')).join() === 'Framework'; }), 'every application descriptor references Framework');
+    });
+  });
+  test('L04', 'Mixed shared and static libraries: already-shared library is not converted again; a missing descriptor reference to it is repaired', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var ws = await lcLoad([{ name: 'App', kind: 'app', refs: ['Sh', 'St'] }, { name: 'Sh', kind: 'shared' }, { name: 'St', kind: 'static' }], { enabled: true });
+      a.eq(lib(ws.libConversion, 'ace13', 'Sh').decision, 'already-shared', 'Sh already shared');
+      var e = ws.libConversion.targets[0].plan.edits;
+      a.ok(!e.some(function (x) { return x.path === 'Sh/.project'; }), 'Sh/.project not touched');
+      a.eq(e.filter(function (x) { return x.path === 'App/application.descriptor'; })[0].notes.length, 2, 'App descriptor gets Sh (repair) and St');
+      ACE.workflow.convertLibraries();
+      a.eq(ACE.libconv.descriptorRefs(ovText(ws, 'ws13', 'App/application.descriptor')).sort().join(','), 'Sh,St', 'both shared libraries referenced');
+    });
+  });
+  test('L05', 'Missing / unresolved library references block conversion; a "known shared library" resolves them', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var spec = [{ name: 'App', kind: 'app', refs: ['L'] }, { name: 'L', kind: 'static', refs: ['Base'] }];
+      var ws = await lcLoad(spec, { enabled: true });
+      var l = lib(ws.libConversion, 'ace13', 'L');
+      a.eq(l.decision, 'blocked', 'L blocked'); a.eq(l.blockers[0].code, 'LC-UNRESOLVED-REF', 'reason: unresolved reference to Base');
+      a.eq(ws.libConversion.targets[0].plan.edits.length, 0, 'nothing planned');
+      ws = await lcLoad(spec, { enabled: true, knownSharedLibraries: ['Base'] });
+      a.eq(lib(ws.libConversion, 'ace13', 'L').decision, 'convert', 'with Base listed as a known shared library, L converts');
+      ACE.workflow.convertLibraries();
+      a.eq(ACE.libconv.descriptorRefs(ovText(ws, 'ws13', 'L/library.descriptor')).join(','), 'Base', 'L references the known shared library Base in its descriptor');
+      a.ok(ws.libConversionRun.targets[0].validation.passed, 'validation passed');
+    });
+  });
+  test('L06', 'Unsupported configurations are reported with evidence, never converted', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var ws = await lcLoad([
+        { name: 'App', kind: 'app', refs: ['Flows', 'DefEsql', 'DefSub', 'XmlLib', 'Dep'] },
+        { name: 'Flows', kind: 'static', files: { 'com/f/Main.msgflow': Fx.libSubflow('com/f/Main.msgflow'), 'com/f/U.esql': 'BROKER SCHEMA com.f\nCREATE PROCEDURE F() BEGIN END;\n' } },
+        { name: 'DefEsql', kind: 'static', files: { 'Util.esql': 'CREATE PROCEDURE D() BEGIN END;\n' } },
+        { name: 'DefSub', kind: 'static', files: { 'Root.subflow': Fx.libSubflow('Root.subflow') } },
+        { name: 'XmlLib', kind: 'static', files: { 'com/x/config.xml': '<a/>' } },
+        { name: 'Dep', kind: 'static', refs: ['DefEsql'] },
+        { name: 'Legacy', kind: 'integration', refs: ['IntUsed'] }, { name: 'IntUsed', kind: 'static' },
+        { name: 'Cyc1', kind: 'static', refs: ['Cyc2'] }, { name: 'Cyc2', kind: 'static', refs: ['Cyc1'] },
+        { name: 'S1', kind: 'static', files: { 'com/same/A.esql': 'BROKER SCHEMA com.same\nCREATE PROCEDURE A() BEGIN END;\n' } },
+        { name: 'S2', kind: 'static', files: { 'com/same/B.esql': 'BROKER SCHEMA com.same\nCREATE PROCEDURE B() BEGIN END;\n' } }
+      ], { enabled: true });
+      var p = ws.libConversion;
+      function codes(n) { return lib(p, 'ace13', n).blockers.map(function (b) { return b.code; }); }
+      a.ok(codes('Flows').indexOf('LC-MSGFLOW') >= 0 && lib(p, 'ace13', 'Flows').blockers[0].basis === 'verified', 'message flow -> LC-MSGFLOW (verified: ibmint BIP1874E)');
+      a.ok(codes('DefEsql').indexOf('LC-ESQL-DEFAULT-SCHEMA') >= 0 && /BIP4129E/.test(lib(p, 'ace13', 'DefEsql').blockers[0].evidence), 'default-schema ESQL -> blocked with runtime evidence BIP4129E');
+      a.ok(codes('DefSub').indexOf('LC-SUBFLOW-DEFAULT-SCHEMA') >= 0, 'subflow in default schema');
+      a.ok(codes('XmlLib').indexOf('LC-UNSUPPORTED-RESOURCE') >= 0, 'XML file unsupported in a shared library');
+      a.ok(codes('Dep').indexOf('LC-DEPENDENT-BLOCKED') >= 0, 'library that depends on a blocked library is blocked too (they convert together or not at all)');
+      a.ok(codes('IntUsed').indexOf('LC-INTEGRATION-PROJECT-REF') >= 0, 'library referenced by an integration project');
+      a.ok(codes('Cyc1').indexOf('LC-CYCLE') >= 0 && codes('Cyc2').indexOf('LC-CYCLE') >= 0, 'reference cycle');
+      a.ok(codes('S1').indexOf('LC-ESQL-SCHEMA-COLLISION') >= 0 && codes('S2').indexOf('LC-ESQL-SCHEMA-COLLISION') >= 0, 'two shared libraries with ESQL in the same schema');
+      var planned = p.targets[0].plan.edits.map(function (e) { return e.path; });
+      a.ok(!planned.some(function (x) { return /^(Flows|DefEsql|DefSub|XmlLib|Dep|IntUsed|Cyc1|Cyc2|S1|S2)\/\.project$/.test(x); }), 'no blocked library is changed');
+      a.ok(p.targets[0].plan.manualActions.some(function (m) { return /named broker schema/.test(m); }), 'manual action explains the schema refactoring');
+    });
+  });
+  test('L07', 'Targets: ACE 12.0.5 only, ACE 13.0.8 only, and both; each package carries its own conversion', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var spec = [{ name: 'App', kind: 'app', refs: ['L'] }, { name: 'L', kind: 'static' }];
+      var ws = await lcLoad(spec, { enabled: true, targets: ['ace12'] });
+      ACE.workflow.convertLibraries();
+      a.ok(ovText(ws, 'ws12', 'L/.project') && !ws.ws13.overlay['L/.project'], 'ace12 target: only the ACE 12 working copy is converted');
+      var z12 = await unzip((await ACE.workflow.exportPackage('ace12')).blob), z13 = await unzip((await ACE.workflow.exportPackage('ace13')).blob);
+      a.ok(util.decodeText(z12['L/.project']).text.indexOf(SHARED_NATURE) >= 0 && util.decodeText(z13['L/.project']).text.indexOf(SHARED_NATURE) < 0, 'ACE 12 package converted, ACE 13 package unchanged');
+      ws = await lcLoad(spec, { enabled: true, targets: ['ace12', 'ace13'] });
+      var run = ACE.workflow.convertLibraries();
+      a.eq(run.targets.map(function (t) { return t.target + ':' + t.applied.length; }).join(','), 'ace12:2,ace13:2', 'both working copies converted');
+      a.ok(run.targets.every(function (t) { return t.validation.passed; }), 'both validated');
+      a.ok(/ACE 12\.0\.5/.test(run.targets[0].state.build.version) && /ACE 13\.0\.8/.test(run.targets[1].state.build.version), 'version-specific build plans');
+    });
+  });
+  test('L08', 'Disabled: nothing analysed or changed; packages identical to the workflow without the feature', { category: 'Library conversion' }, async function (a) {
+    var spec = [{ name: 'App', kind: 'app', refs: ['L'] }, { name: 'L', kind: 'static' }];
+    var ws = await lcLoad(spec, { enabled: false });
+    a.eq(ws.libConversion, null, 'no conversion analysis when disabled');
+    await a.throwsAsync(async function () { ACE.workflow.convertLibraries(); }, /disabled/, 'conversion refuses to run when disabled');
+    var z = await unzip((await ACE.workflow.exportPackage('ace13')).blob);
+    a.ok(!Object.keys(z).some(function (p) { return /LIBRARY-CONVERSION|_original-before-changes/.test(p); }), 'no conversion report, no changed files in the package');
+    a.ok(util.decodeText(z['L/.project']).text.indexOf(SHARED_NATURE) < 0 && util.bytesEqual(z['App/application.descriptor'], ws.files.filter(function (f) { return f.path === 'ws/App/application.descriptor'; })[0].bytes), 'project files exported unchanged');
+    // the same input with the feature never enabled gives the same project files
+    ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS);
+    var z2 = await unzip((await ACE.workflow.exportPackage('ace13')).blob);
+    a.ok(Object.keys(z).filter(function (p) { return /^(App|L)\//.test(p); }).every(function (p) { return util.bytesEqual(z[p], z2[p]); }), 'regression: identical project files with the feature disabled');
+  });
+  test('L09', 'Repeated runs are idempotent: no duplicate natures or references; second run changes nothing', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var ws = await lcLoad([{ name: 'App', kind: 'app', refs: ['L'] }, { name: 'L', kind: 'static' }], { enabled: true });
+      ACE.workflow.convertLibraries(); var first = ovText(ws, 'ws13', 'App/application.descriptor'), firstP = ovText(ws, 'ws13', 'L/.project');
+      var r2 = ACE.workflow.convertLibraries();
+      a.eq(r2.targets[0].applied.length, 0, 'second run applies nothing');
+      a.eq(ovText(ws, 'ws13', 'App/application.descriptor'), first, 'descriptor unchanged'); a.eq(ovText(ws, 'ws13', 'L/.project'), firstP, '.project unchanged');
+      a.eq((firstP.match(/sharedLibraryNature/g) || []).length, 1, 'sharedLibraryNature appears once');
+      a.eq(ACE.libconv.descriptorRefs(first).length, 1, 'one reference');
+      a.eq(lib(ws.libConversion, 'ace13', 'L').decision, 'already-shared', 'after conversion the library is recognised as shared');
+      a.eq(ws.ws13.changelog.filter(function (e) { return e.action === 'converted'; }).length, 2, 'change log has the two changes once');
+    });
+  });
+  test('L10', 'Undo restores the original project files', { category: 'Library conversion' }, async function (a) {
+    await withLC({}, async function () {
+      var ws = await lcLoad([{ name: 'App', kind: 'app', refs: ['L'] }, { name: 'L', kind: 'static' }], { enabled: true });
+      ACE.workflow.convertLibraries();
+      a.ok(ws.ws13.overlay['L/.project'], 'converted');
+      var n = ACE.workflow.undoLibraryConversion();
+      a.eq(n, 2, 'two changes undone'); a.ok(!ws.ws13.overlay['L/.project'] && !ws.ws13.overlay['App/application.descriptor'], 'working copy back to the original');
+      a.eq(lib(ws.libConversion, 'ace13', 'L').decision, 'convert', 'library is static again and can be converted again');
+    });
+  });
+  test('L11', 'Descriptor edits: missing descriptor is created; prefixed namespace and existing references are handled', { category: 'Library conversion' }, async function (a) {
+    var pre = '<?xml version="1.0"?><x:appDescriptor xmlns:x="http://com.ibm.etools.mft.descriptor.app" xmlns:b="http://com.ibm.etools.mft.descriptor.base"><b:references><b:sharedLibraryReference><b:libraryName>Old</b:libraryName></b:sharedLibraryReference></b:references></x:appDescriptor>';
+    var r = ACE.libconv.addDescriptorRef(pre, 'New');
+    a.eq(ACE.libconv.descriptorRefs(r.text).join(','), 'Old,New', 'reference appended using the existing b: prefix');
+    a.eq(ACE.libconv.addDescriptorRef(r.text, 'New').changed, false, 'adding the same reference again is a no-op');
+    a.ok(ACE.libconv.addDescriptorRef('<not xml', 'X').error, 'malformed descriptor reported, not rewritten');
+    await withLC({}, async function () {
+      var ws = await lcLoad([{ name: 'App', kind: 'app', refs: ['L'], noDescriptor: true }, { name: 'L', kind: 'static' }], { enabled: true });
+      var e = ws.libConversion.targets[0].plan.edits.filter(function (x) { return x.path === 'App/application.descriptor'; })[0];
+      a.ok(e && e.created, 'missing application.descriptor is created');
+      ACE.workflow.convertLibraries();
+      var z = await unzip((await ACE.workflow.exportPackage('ace13')).blob);
+      a.eq(ACE.libconv.descriptorRefs(util.decodeText(z['App/application.descriptor']).text).join(','), 'L', 'created descriptor exported with the reference');
+    });
+  });
+  test('L12', 'BAR input: libraries inside the application archive are analysed with the same rules', { category: 'Library conversion' }, async function (a) {
+    await withLC({ enabled: true }, async function () {
+      var ws = await load(await Fx.syntheticBar(), 'Demo.bar');
+      var l = lib(ws.libConversion, 'ace13', 'CommonLIB');
+      a.eq(l.currentType, 'static-library', 'CommonLIB (libzip inside the appzip) recognised as a static library');
+      a.ok(l.decision === 'blocked' && l.blockers.some(function (b) { return b.code === 'LC-SUBFLOW-DEFAULT-SCHEMA'; }), 'Common.subflow in the default schema blocks it: ' + l.blockers.map(function (b) { return b.code; }).join(', '));
+    });
+  });
+  test('L13', 'Real workspace ZIP: conversion analysis reports what blocks the framework libraries; nothing is changed', { category: 'Library conversion', requires: 'workspace' }, async function (a, env) {
+    await withLC({ enabled: true }, async function () {
+      var ws = await load(await util.readFileBytes(env.workspaceFile), env.workspaceFile.name);
+      var p = ws.libConversion.targets[0].plan;
+      p.libraries.forEach(function (l) { a.note(l.name + ': ' + l.decision + (l.blockers.length ? ' - ' + util.uniq(l.blockers.map(function (b) { return b.code; })).join(', ') : '')); });
+      a.ok(p.libraries.length > 0, p.libraries.length + ' libraries analysed');
+      if (env.workspaceFile.name === 'valleysoft.zip') {
+        ['AuditLIB', 'ExceptionLIB', 'FrameworkLIB'].forEach(function (n) { var l = lib(ws.libConversion, 'ace13', n); a.ok(l.decision === 'blocked' && l.blockers.some(function (b) { return b.code === 'LC-ESQL-DEFAULT-SCHEMA'; }), n + ' blocked: ESQL in the default schema (BIP4129E)'); });
+        a.ok(p.warnings.some(function (w) { return /PrimeLib/.test(w); }), 'missing PrimeLib reported');
+        a.eq(p.edits.length, 0, 'no file is planned to change');
+      }
+    });
+  });
+
+  /* ---------- 13. external validation ---------- */
   test('X01', 'ACE 12.0.5 Toolkit imports the ACE 12 package and builds without errors', { category: 'IBM Toolkit validation', external: true });
   test('X02', 'ACE 13.0.8 Toolkit imports the ACE 13 package; Java project builds; BAR can be built', { category: 'IBM Toolkit validation', external: true });
   test('X03', 'BAR rebuilt in ACE 13 deploys to an ACE 13.0.8 integration server (Java 17) and passes regression tests', { category: 'IBM runtime validation', external: true });

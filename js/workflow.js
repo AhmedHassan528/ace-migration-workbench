@@ -39,6 +39,9 @@
     ws.proposals = decided.concat(fresh);
     ws.checklist = ACE.premigration.build(ws, ws.aceFindings, ws.java17);
     ACE.migScan.analyze(ws);
+    // Optional static-to-shared library conversion: analysed (planned) only when enabled; applied on request.
+    var lcCfg = S.libraryConversion;
+    ws.libConversion = lcCfg && lcCfg.enabled ? ACE.libconv.run(ws, lcCfg, { apply: false }) : null;
     ACE.emit('analysis-updated', ws);
   };
 
@@ -128,6 +131,29 @@
     return { accepted: ok.length, rejected: rejected.map(function (s) { return s.path; }) };
   };
 
+  /* Run the library conversion on the configured target working copies (idempotent; returns the run report). */
+  wf.convertLibraries = function () {
+    var ws = wf.state.ws, cfg = ACE.settings.current.libraryConversion;
+    if (!cfg || !cfg.enabled) throw new Error('Library conversion is disabled in Settings.');
+    var run = ACE.libconv.run(ws, cfg, { apply: true });
+    ws.libConversionRun = run;
+    wf.analyze();
+    return run;
+  };
+  wf.undoLibraryConversion = function () {
+    var ws = wf.state.ws, n = ACE.libconv.undo(ws, 'ws12') + ACE.libconv.undo(ws, 'ws13');
+    ws.libConversionRun = null;
+    wf.analyze();
+    return n;
+  };
+  /* The conversion report for an export: the last applied run, else the current plan. */
+  wf.libraryConversionReport = function (ws, target) {
+    var run = ws.libConversionRun || ws.libConversion;
+    if (!run) return null;
+    var t = Object.assign({}, run, { targets: run.targets.filter(function (x) { return !target || x.target === target; }) });
+    return t.targets.length || !run.enabled ? t : null;
+  };
+
   wf.reportsFor = function (ws, target) {
     var r = {
       'EXTRACTION-REPORT.json': JSON.stringify(ACE.reports.extraction(ws), null, 2),
@@ -135,6 +161,8 @@
       'EXCLUDED-JARS.json': JSON.stringify(ACE.reports.exclusions(ws), null, 2),
       'REPORT.html': ACE.reports.html(ws)
     };
+    var lc = wf.libraryConversionReport(ws, target);
+    if (lc) { r['LIBRARY-CONVERSION-REPORT.json'] = JSON.stringify(ACE.libconv.reportJson(lc), null, 2); r['LIBRARY-CONVERSION-REPORT.md'] = ACE.libconv.reportText(lc); }
     if (target === 'ace13') {
       r['COMPATIBILITY-REPORT.json'] = JSON.stringify(ACE.reports.compatibility(ws), null, 2);
       r['MIGRATION-REPORT.json'] = JSON.stringify(ACE.reports.migration(ws), null, 2);

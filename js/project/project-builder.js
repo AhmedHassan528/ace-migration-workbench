@@ -172,9 +172,21 @@
     }
     // 2. generated .project files for applications / libraries
     lay.projects.forEach(function (p) {
-      var g = proj.generatedProjectFile(ws, p, refs);
-      if (g && g.text) put(p.name + '/.project', g.text, { origin: 'generated', note: g.note });
+      var g = proj.generatedProjectFile(ws, p, refs), gp = p.name + '/.project', gov = overlay[gp];
+      if (g && g.text && gov) {
+        // generated .project changed in the working copy (e.g. library conversion)
+        put('_original-before-changes/' + gp, g.text, { origin: 'generated', note: 'unchanged generated copy of a file modified in this package' });
+        put(gp, gov.text, { origin: 'transformed', note: g.note + ' | ' + gov.history.map(function (h) { return h.title; }).join('; ') });
+        changed.push(gp);
+      } else if (g && g.text) put(gp, g.text, { origin: 'generated', note: g.note });
       else if (g) manifest.push({ path: p.name + '/', origin: 'note', note: g.note });
+    });
+    // 2b. files created in the working copy that have no original (e.g. a missing descriptor added by the library conversion)
+    Object.keys(overlay).forEach(function (path) {
+      var o = overlay[path];
+      if (w.has(path) || !o.history.length || !o.history[0].created) return;
+      put(path, o.text, { origin: 'generated', note: o.history.map(function (h) { return h.title; }).join('; ') });
+      changed.push(path);
     });
     // 3. Eclipse Java projects for decompiled / imported JARs (src, bin, Lib, .project, .classpath, .settings)
     var javaProjects = [];

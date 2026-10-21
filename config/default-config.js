@@ -16,4 +16,9 @@ window.ACE_DEFAULT_CONFIG = {
   decompiler: { engine: 'workbench-js' },     // built-in vanilla JavaScript decompiler (no external runtime)
   project: { keepOriginalJar: true, libIncludeExcluded: true },
   export: { includeOriginalBar: true, decompileHeader: true },
+  // Optional static-to-shared library conversion (js/project/library-conversion.js). Disabled = no change
+  // to the migration workflow. targets: ace12 and/or ace13 working copy; libraries: "auto" (all static
+  // libraries) or a list of names; knownSharedLibraries: libraries that are already shared elsewhere.
+  // The original source is always preserved (changes go to the working copy, originals are exported).
+  libraryConversion: { enabled: false, targets: ["ace13"], libraries: "auto", knownSharedLibraries: [], validateAfterConversion: true },
 };
