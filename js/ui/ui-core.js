@@ -32,9 +32,37 @@
     UI.$('#progFill').style.width = pct + '%';
     UI.$('#progText').textContent = stage + (total ? ' ' + done + '/' + total : '') + (detail ? ' - ' + detail : '');
   };
+  /* In-page dialogs. The browser's own confirm()/alert() are not used: embedded or sandboxed browsers
+   * (and "prevent additional dialogs") silently suppress them, which made buttons appear to do nothing.
+   * UI.ask(message, onYes, {ok, cancel, onNo}) - confirmation; UI.notify(message) - information. */
+  function dialog(message, buttons) {
+    var old = document.getElementById('uiDialog'); if (old) old.remove();
+    var back = document.createElement('div'); back.id = 'uiDialog'; back.className = 'dlg-back';
+    var box = document.createElement('div'); box.className = 'dlg'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+    var msg = document.createElement('div'); msg.className = 'dlg-msg'; msg.textContent = message; box.appendChild(msg);
+    var row = document.createElement('div'); row.className = 'row dlg-btns';
+    function close() { back.remove(); document.removeEventListener('keydown', onKey, true); }
+    buttons.forEach(function (b) {
+      var el = document.createElement('button'); el.className = 'btn' + (b.primary ? ' primary' : ''); el.textContent = b.label;
+      el.onclick = function () { close(); if (b.fn) b.fn(); };
+      row.appendChild(el); b.el = el;
+    });
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); var c = buttons.filter(function (b) { return b.cancel; })[0] || buttons[buttons.length - 1]; c.el.click(); }
+    }
+    document.addEventListener('keydown', onKey, true);
+    box.appendChild(row); back.appendChild(box); document.body.appendChild(back);
+    (buttons.filter(function (b) { return b.primary; })[0] || buttons[0]).el.focus();
+  }
+  UI.ask = function (message, onYes, opts) {
+    opts = opts || {};
+    dialog(message, [{ label: opts.ok || 'OK', primary: true, fn: onYes }, { label: opts.cancel || 'Cancel', cancel: true, fn: opts.onNo }]);
+  };
+  UI.notify = function (message) { dialog(message, [{ label: 'OK', primary: true, cancel: true }]); };
+
   /* Run a long operation with the progress bar and the Cancel button. */
   UI.run = async function (label, fn) {
-    if (UI.busy) { alert('Another operation is still running.'); return; }
+    if (UI.busy) { UI.notify('Another operation is still running.'); return; }
     UI.busy = true; UI.cancel = new util.CancelToken();
     var btn = UI.$('#cancelBtn'); btn.disabled = false;
     UI.progress(label, 0, 0, 'starting');

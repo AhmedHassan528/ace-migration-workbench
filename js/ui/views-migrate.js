@@ -47,9 +47,10 @@
       var s = UI.$('.fxShow', card); if (s) s.onclick = function () { fixOpen[p.id] = !fixOpen[p.id]; UI.refresh(); };
       var a = UI.$('.fxApply', card); if (a) a.onclick = function () {
         var alts = ACE.transforms.alternatives(ws, p).filter(function (x) { return x.status === 'proposed'; });
-        if (!confirm('Accept "' + p.title + '"?\n\nThe old code in ' + p.outPath + ' is replaced in the ACE 13 working copy (and in the ACE 13 export).\n' + p.notes.join('\n') + (alts.length ? '\n\nThe other option' + (alts.length > 1 ? 's' : '') + ' for this problem will be withdrawn.' : '') + '\n\nThe original file is kept unchanged (exported under _original-before-changes/) and Undo restores it.')) return;
-        try { ACE.transforms.apply(ws, p); ACE.workflow.analyze(); } catch (e) { alert(e.message); }
-        UI.refresh();
+        UI.ask('Accept "' + p.title + '"?\n\nThe old code in ' + p.outPath + ' is replaced in the ACE 13 working copy (and in the ACE 13 export).\n' + p.notes.join('\n') + (alts.length ? '\n\nThe other option' + (alts.length > 1 ? 's' : '') + ' for this problem will be withdrawn.' : '') + '\n\nThe original file is kept unchanged (exported under _original-before-changes/) and Undo restores it.', function () {
+          try { ACE.transforms.apply(ws, p); ACE.workflow.analyze(); UI.refresh(); }
+          catch (e) { UI.refresh(); UI.notify('The change was not applied: ' + e.message); }
+        }, { ok: 'Accept and replace' });
       };
       var r = UI.$('.fxReject', card); if (r) r.onclick = function () { p.status = 'rejected'; ws.ws13.changelog.push({ t: util.nowIso(), path: p.outPath, action: 'rejected', kind: 'autofix', fixId: p.fixId, ruleId: p.ruleId, title: 'Rejected: ' + p.title }); ACE.log.info('Rejected fix ' + p.fixId + ' for ' + p.outPath); UI.refresh(); };
       var u = UI.$('.fxUndo', card); if (u) u.onclick = function () { ACE.transforms.undo(ws, 'ws13', p.outPath); ACE.workflow.analyze(); UI.refresh(); };

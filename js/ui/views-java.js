@@ -45,19 +45,22 @@
         var j = rowRec(tr);
         UI.$('.jopen', tr).onclick = function () { openJar = openJar === j.sha256 ? null : j.sha256; openClass = null; UI.refresh(); };
         UI.$('.jinc', tr).onclick = function () {
-          if (/driver/.test(j.classification.type) && !confirm(j.name + ' is classified as a database driver (' + j.classification.driverName + ').\nDrivers are excluded from decompilation by policy.\n\nInclude it anyway?')) return;
-          S.jarOverrides[j.sha256] = 'include'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh();
+          function go() { S.jarOverrides[j.sha256] = 'include'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); }
+          if (/driver/.test(j.classification.type)) UI.ask(j.name + ' is classified as a database driver (' + j.classification.driverName + ').\nDrivers are excluded from decompilation by policy.\n\nInclude it anyway?', go, { ok: 'Include' });
+          else go();
         };
         UI.$('.jexc', tr).onclick = function () { S.jarOverrides[j.sha256] = 'exclude'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); };
         UI.$('.jclr', tr).onclick = function () { delete S.jarOverrides[j.sha256]; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); };
         UI.$('.jsel', tr).onchange = function (e) {
-          if (e.target.checked && /driver/.test(j.classification.type) && !confirm('Include database driver ' + j.name + ' for decompilation?')) { e.target.checked = false; return; }
-          S.jarOverrides[j.sha256] = e.target.checked ? 'include' : 'exclude'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh();
+          var on = e.target.checked;
+          function go() { S.jarOverrides[j.sha256] = on ? 'include' : 'exclude'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); }
+          if (on && /driver/.test(j.classification.type)) { e.target.checked = false; UI.ask('Include database driver ' + j.name + ' for decompilation?', go, { ok: 'Include' }); }
+          else go();
         };
       });
       UI.$('#decRun', el).onclick = function () {
         var sel = ws.jars.filter(function (j) { return j.decision.selected && j.decision.eligible; });
-        if (!sel.length) { alert('No JAR is selected for decompilation.'); return; }
+        if (!sel.length) { UI.notify('No JAR is selected for decompilation.'); return; }
         UI.run('Decompile ' + sel.length + ' JAR(s)', function (cancel, progress) { return ACE.workflow.decompile(sel, cancel, progress, projNames); });
       };
       UI.$('#exclDl', el).onclick = function () { util.download(JSON.stringify(ACE.reports.exclusions(ws), null, 2), 'excluded-jars.json', 'application/json'); };
@@ -108,7 +111,7 @@
     };
     UI.$('#srcImp', el).onchange = function (e) {
       var files = Array.prototype.slice.call(e.target.files);
-      UI.run('Import source for ' + j.name, async function () { var r = await ACE.workflow.importSources(j, files); if (!r.accepted) alert('No imported file matched a class of ' + j.name + '.\nRejected: ' + r.rejected.join(', ')); });
+      UI.run('Import source for ' + j.name, async function () { var r = await ACE.workflow.importSources(j, files); if (!r.accepted) UI.notify('No imported file matched a class of ' + j.name + '.\nRejected: ' + r.rejected.join(', ')); });
     };
   }
 })(window.ACE);

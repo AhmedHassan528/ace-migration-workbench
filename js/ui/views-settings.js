@@ -50,10 +50,10 @@
       var oc = UI.$('#sOvClr', el); if (oc) oc.onclick = function () { S.jarOverrides = {}; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); };
       UI.$('#sExport', el).onclick = function () { util.download(JSON.stringify(S, null, 2), 'workbench-settings.json', 'application/json'); };
       UI.$('#sImport', el).onchange = async function (e) {
-        try { var o = JSON.parse(util.decodeText(await util.readFileBytes(e.target.files[0])).text); Object.assign(S, o); ACE.settings.save(); ACE.log.ok('Settings imported'); } catch (x) { alert('Invalid settings file: ' + x.message); }
+        try { var o = JSON.parse(util.decodeText(await util.readFileBytes(e.target.files[0])).text); Object.assign(S, o); ACE.settings.save(); ACE.log.ok('Settings imported'); } catch (x) { UI.notify('Invalid settings file: ' + x.message); }
         UI.refresh();
       };
-      UI.$('#sReset', el).onclick = function () { if (confirm('Reset all settings to defaults?')) { ACE.settings.reset(); ACE.app.syncHeader(); ACE.workflow.analyze(); UI.refresh(); } };
+      UI.$('#sReset', el).onclick = function () { UI.ask('Reset all settings to defaults?', function () { ACE.settings.reset(); ACE.app.syncHeader(); ACE.workflow.analyze(); UI.refresh(); }, { ok: 'Reset' }); };
       UI.$('#dImport', el).onchange = async function (e) {
         var files = Array.prototype.slice.call(e.target.files);
         for (var i = 0; i < files.length; i++) {
@@ -73,7 +73,7 @@
           if (o.id === window.ACE_ACE_RULES.id) throw new Error('This is the built-in rule set id; give imported sets their own "id"');
           st.extraRules = st.extraRules.filter(function (r) { return r.id !== o.id; }).concat([o]);
           await ACE.settings.putStore('rules', o); ACE.log.ok('Imported rule set ' + o.id + ' (' + o.rules.length + ' rules)'); ACE.workflow.analyze();
-        } catch (x) { alert('Rule file rejected: ' + x.message); }
+        } catch (x) { UI.notify('Rule file rejected: ' + x.message); }
         UI.refresh();
       };
       UI.$$('.rDel', el).forEach(function (b) { b.onclick = async function () { var id = b.getAttribute('data-id'); st.extraRules = st.extraRules.filter(function (r) { return r.id !== id; }); await ACE.settings.deleteStore('rules', id); ACE.workflow.analyze(); UI.refresh(); }; });

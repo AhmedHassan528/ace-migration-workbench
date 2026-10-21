@@ -142,17 +142,17 @@
     var n = selNode(m), leaves, title, root, fileName;
     if (kind === 'project') {
       var pr = projectOf(m, n);
-      if (!pr) return alert('Nothing to export.');
+      if (!pr) return UI.notify('Nothing to export.');
       leaves = pr.leaves; root = pr.label; title = 'project ' + pr.label; fileName = pr.label.replace(/[^\w.\-]+/g, '_') + '.zip';
     } else if (kind === 'folder') {
-      if (!n || n.kind === 'file') return alert('Select a folder, group, package or project in the tree first.');
+      if (!n || n.kind === 'file') return UI.notify('Select a folder, group, package or project in the tree first.');
       leaves = EX.leavesUnder(n); var rr = rootOf(m, n); root = rr.label; title = 'folder "' + n.label + '" of ' + rr.label; fileName = (rr.label + '-' + n.label).replace(/[^\w.\-]+/g, '_') + '.zip';
     } else {
       var paths = st.multi.size ? Array.from(st.multi) : (n && n.kind === 'file' ? [n.path] : []);
-      if (!paths.length) return alert('Select one or more files (Ctrl+click / Shift+click) first.');
+      if (!paths.length) return UI.notify('Select one or more files (Ctrl+click / Shift+click) first.');
       leaves = paths.map(function (p) { return m.leaves[p]; }).filter(Boolean); root = '(selection)'; title = paths.length + ' selected file(s)'; fileName = 'selected-files.zip';
     }
-    if (!leaves.length) return alert('The selection contains no files.');
+    if (!leaves.length) return UI.notify('The selection contains no files.');
     st.pending = { kind: kind, leaves: leaves, title: title, root: root, fileName: fileName }; st.status = null;
     UI.refresh();
   }
@@ -166,7 +166,7 @@
       items.push(['Open', function () { select(ws, m, n.id); }]);
       items.push(['Download file', function () { var d = EX.readBytes(ws, n, st.copy); util.download(d, n.label); }]);
       items.push(['Export file as ZIP', function () { st.sel = n.id; st.multi = new Set([n.path]); prepare(ws, m, 'files'); }]);
-      items.push(['Copy export path', function () { try { navigator.clipboard.writeText(n.path); ACE.log.info('Copied ' + n.path); } catch (e) { prompt('Export path', n.path); } }]);
+      items.push(['Copy export path', function () { try { navigator.clipboard.writeText(n.path); ACE.log.info('Copied ' + n.path); } catch (e) { UI.notify('Export path: ' + n.path); } }]);
     } else if (n.kind === 'libref') {
       items.push(['Go to ' + n.label, function () { goto(ws, m, n.target); }]);
     } else {
@@ -192,10 +192,13 @@
       var paths = st.visible.map(function (v) { return v.path; }), a = paths.indexOf(st.anchor), b = paths.indexOf(n.path);
       if (a >= 0 && b >= 0) { st.multi = new Set(paths.slice(Math.min(a, b), Math.max(a, b) + 1)); UI.refresh(); return; }
     }
-    if (st.dirty && st.sel !== id && !confirm('Discard unsaved changes to ' + (selNode(m) || {}).label + '?')) return;
-    st.dirty = false; st.edText = null;
-    st.sel = id; st.multi = new Set(n.kind === 'file' ? [n.path] : []); st.anchor = n.kind === 'file' ? n.path : null;
-    UI.refresh();
+    function go() {
+      st.dirty = false; st.edText = null;
+      st.sel = id; st.multi = new Set(n.kind === 'file' ? [n.path] : []); st.anchor = n.kind === 'file' ? n.path : null;
+      UI.refresh();
+    }
+    if (st.dirty && st.sel !== id) UI.ask('Discard unsaved changes to ' + (selNode(m) || {}).label + '?', go, { ok: 'Discard changes' });
+    else go();
   }
 
   UI.register('explorer', {
@@ -215,7 +218,11 @@
     bind: function (el, s) {
       if (!s.ws || s.ws.fatal) return;
       var ws = s.ws, m = model(ws);
-      UI.$('#pxCopy', el).onchange = function (e) { if (st.dirty && !confirm('Discard unsaved changes?')) { e.target.value = st.copy; return; } st.copy = e.target.value; st.dirty = false; st.edText = null; st.status = null; UI.refresh(); };
+      UI.$('#pxCopy', el).onchange = function (e) {
+        var want = e.target.value;
+        function go() { st.copy = want; st.dirty = false; st.edText = null; st.status = null; UI.refresh(); }
+        if (st.dirty) { e.target.value = st.copy; UI.ask('Discard unsaved changes?', go, { ok: 'Discard changes' }); } else go();
+      };
       var fi = UI.$('#pxFilter', el); fi.oninput = function () { st.filter = fi.value; var pos = fi.selectionStart; UI.refresh(); var f2 = UI.$('#pxFilter'); f2.focus(); f2.setSelectionRange(pos, pos); };
       UI.$('#pxExpand', el).onclick = function () { Object.keys(m.byId).forEach(function (k) { if (m.byId[k].children.length) st.expanded.add(k); }); UI.refresh(); };
       UI.$('#pxCollapse', el).onclick = function () { st.expanded.clear(); UI.refresh(); };
