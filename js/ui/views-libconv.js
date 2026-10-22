@@ -88,6 +88,12 @@
       if (!plan) return h + '<div class="banner">Press <b>Save and analyse</b>.</div>';
       var todo = plan.targets.reduce(function (a, t) { return a + t.plan.edits.length; }, 0), blocked = plan.targets.reduce(function (a, t) { return a + t.plan.blockedCount; }, 0), errs = plan.targets.reduce(function (a, t) { return a + t.plan.errors.length; }, 0);
       h += '<div class="row"><button class="btn primary" id="lcRun"' + (todo && !errs ? '' : ' disabled') + '>Convert…</button> <button class="btn" id="lcUndo"' + (ws.libConversionRun || hasConversion(ws) ? '' : ' disabled') + '>Undo conversion</button> <button class="btn" id="lcMd">Download report (Markdown)</button> <button class="btn" id="lcJson">Download report (JSON)</button> <span class="small muted">' + (todo ? todo + ' file change(s) planned' : 'nothing to change') + (blocked ? ', ' + blocked + ' library(ies) cannot be converted' : '') + '</span></div>';
+      if (ws.libConversionRun) {
+        // download the converted source right here (same package as the ACE 12 / ACE 13 export views)
+        h += '<div class="card banner ok"><b>Conversion applied.</b> Download the converted projects (Toolkit workspace ZIP: shared library, updated applications, originals under <code>_original-before-changes/</code>, reports under <code>_workbench/</code>):<div class="row">' +
+          ws.libConversionRun.targets.map(function (t) { return '<button class="btn primary lcDl" data-t="' + t.target + '">Download converted ' + (t.target === 'ace12' ? 'ACE ' + esc(window.ACE_VERSIONS.source) : 'ACE ' + esc(window.ACE_VERSIONS.target)) + ' project ZIP</button>'; }).join(' ') +
+          '</div><div class="small muted">Import it in the Toolkit with File &gt; Import &gt; Existing Projects into Workspace &gt; Select archive file, or build it with the ibmint commands listed below.</div></div>';
+      }
       h += validationHtml(ws.libConversionRun);
       plan.targets.forEach(function (t) { h += planHtml(t, false); });
       return h;
@@ -122,7 +128,16 @@
           UI.refresh();
         }, { ok: 'Convert' });
       };
-      var un = UI.$('#lcUndo', el); if (un) un.onclick = function () { UI.ask('Undo the library conversion in every working copy?', function () { var n = ACE.workflow.undoLibraryConversion(); ACE.log.info('Undid ' + n + ' conversion change(s)'); UI.refresh(); }, { ok: 'Undo' }); };
+      UI.$$('.lcDl', el).forEach(function (b) {
+        b.onclick = function () {
+          var target = b.getAttribute('data-t'), ver = target === 'ace12' ? window.ACE_VERSIONS.source : window.ACE_VERSIONS.target;
+          UI.run('Build converted ' + target.toUpperCase() + ' package', async function (cancel, progress) {
+            var r = await ACE.workflow.exportPackage(target, function (d, t) { progress('zip', d, t); }, cancel);
+            util.download(r.blob, util.stripExt(ws.barName) + '-ACE' + ver + '-shared-libraries.zip');
+          });
+        };
+      });
+      var un = UI.$('#lcUndo', el); if (un) un.onclick =function () { UI.ask('Undo the library conversion in every working copy?', function () { var n = ACE.workflow.undoLibraryConversion(); ACE.log.info('Undid ' + n + ' conversion change(s)'); UI.refresh(); }, { ok: 'Undo' }); };
       function rep() { return ws.libConversionRun || ws.libConversion; }
       UI.$('#lcMd', el).onclick = function () { util.download(ACE.libconv.reportText(rep()), util.stripExt(ws.barName) + '-library-conversion.md', 'text/markdown'); };
       UI.$('#lcJson', el).onclick = function () { util.download(JSON.stringify(ACE.libconv.reportJson(rep()), null, 2), util.stripExt(ws.barName) + '-library-conversion.json', 'application/json'); };
