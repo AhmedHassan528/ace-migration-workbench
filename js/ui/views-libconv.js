@@ -16,9 +16,12 @@
       '<label>Source version</label><div>ACE ' + esc(window.ACE_VERSIONS.source) + ' (fixed, see Settings)</div>' +
       '<label>Target(s)</label><div><label class="inline"><input type="checkbox" id="lcT12"' + (c.targets.indexOf('ace12') >= 0 ? ' checked' : '') + '> ACE ' + esc(window.ACE_VERSIONS.source) + ' (ACE 12 package)</label> &nbsp; <label class="inline"><input type="checkbox" id="lcT13"' + (c.targets.indexOf('ace13') >= 0 ? ' checked' : '') + '> ACE ' + esc(window.ACE_VERSIONS.target) + ' (ACE 13 package)</label></div>' +
       '<label>Library mode</label><div>shared</div>' +
-      '<label>Strategy</label><div><label class="inline"><input type="radio" name="lcStrat" value="refactor"' + (c.strategy !== 'in-place' ? ' checked' : '') + '> <b>Refactor</b> (recommended): merge interdependent libraries into one shared library, move ESQL/subflows into a named schema, keep application-hooked subflows local, rewrite all references</label><br><label class="inline"><input type="radio" name="lcStrat" value="in-place"' + (c.strategy === 'in-place' ? ' checked' : '') + '> <b>Type change only</b>: for libraries that are already valid shared libraries</label></div>' +
-      '<label>Shared library name</label><div><input type="text" id="lcName" placeholder="default: SharedFramework (or the library name when there is only one)" value="' + esc(c.sharedLibraryName || '') + '"><div class="small muted">Use the same name and schema for every service so they all share one library.</div></div>' +
-      '<label>Broker schema</label><div><input type="text" id="lcSchema" placeholder="default: the library name in lower case" value="' + esc(c.schema || '') + '"></div>' +
+      '<label>Strategy</label><div>' +
+        '<label class="inline"><input type="radio" name="lcStrat" value="separate"' + (c.strategy !== 'in-place' && c.strategy !== 'refactor' ? ' checked' : '') + '> <b>Keep libraries separate</b> (recommended): every library keeps its name and becomes its own shared library; ESQL/subflows move into a schema named after the library; subflows that ACE cannot use across shared libraries are copied where needed; all references rewritten</label><br>' +
+        '<label class="inline"><input type="radio" name="lcStrat" value="refactor"' + (c.strategy === 'refactor' ? ' checked' : '') + '> <b>Merge</b>: combine the interdependent libraries into ONE shared library (fewer copies; the library names change)</label><br>' +
+        '<label class="inline"><input type="radio" name="lcStrat" value="in-place"' + (c.strategy === 'in-place' ? ' checked' : '') + '> <b>Type change only</b>: for libraries that are already valid shared libraries</label></div>' +
+      '<label>Merge: shared library name</label><div><input type="text" id="lcName" placeholder="Merge strategy only - default: SharedFramework" value="' + esc(c.sharedLibraryName || '') + '"><div class="small muted">Use the same settings for every service so they all use the same shared libraries.</div></div>' +
+      '<label>Merge: broker schema</label><div><input type="text" id="lcSchema" placeholder="Merge strategy only - default: the library name in lower case" value="' + esc(c.schema || '') + '"></div>' +
       '<label>Libraries to convert</label><div><label class="inline"><input type="radio" name="lcSel" value="auto"' + (auto ? ' checked' : '') + '> all static libraries</label> <label class="inline"><input type="radio" name="lcSel" value="pick"' + (auto ? '' : ' checked') + '> only these:</label> ' +
         (statics.length ? statics.map(function (n) { return '<label class="inline"><input type="checkbox" class="lcLib" value="' + esc(n) + '"' + (!auto && (c.libraries || []).indexOf(n) >= 0 ? ' checked' : '') + '> ' + esc(n) + '</label>'; }).join(' ') : '<span class="muted">(open a workspace ZIP or BAR to list its static libraries)</span>') + '</div>' +
       '<label>Known shared libraries</label><div><input type="text" class="wide" id="lcKnown" placeholder="names, comma separated" value="' + esc((c.knownSharedLibraries || []).join(', ')) + '"><div class="small muted">Libraries that are already shared libraries but are not in this input (e.g. converted earlier for another service).</div></div>' +
@@ -108,7 +111,7 @@
         c.knownSharedLibraries = UI.$('#lcKnown', el).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
         c.validateAfterConversion = UI.$('#lcVal', el).checked;
         var strat = UI.$$('input[name=lcStrat]', el).filter(function (r) { return r.checked; })[0];
-        c.strategy = strat ? strat.value : 'refactor';
+        c.strategy = strat ? strat.value : 'separate';
         c.sharedLibraryName = UI.$('#lcName', el).value.trim();
         c.schema = UI.$('#lcSchema', el).value.trim();
         S.libraryConversion = c; ACE.settings.save();

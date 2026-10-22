@@ -884,7 +884,64 @@
     }
   });
 
-  /* ---------- 14. external validation ---------- */
+  /* ---------- 14. static-to-shared conversion keeping the libraries separate (default) ---------- */
+  var SEP = { enabled: true, strategy: 'separate' };
+  async function sepLoad(spec) { ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, SEP); return load(await Fx.libWorkspace(spec), 'sep.zip'); }
+
+  test('S01', 'Separate strategy: every library keeps its name; nested subflows of another library copied into the library; application hook copied into the application', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC(SEP, async function () {
+      a.eq(ACE.libconv.DEFAULTS.strategy, 'separate', 'separate is the default strategy');
+      var ws = await sepLoad(Fx.frameworkSpec()), p = plan13(ws);
+      a.eq(p.strategy, 'separate', 'strategy'); a.eq(p.converted.join(','), 'AuditL,FwL', 'both libraries convert');
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(v.passed, 'validation: ' + v.checks.map(function (c) { return c.id + ' ' + c.status + (c.problems.length ? ' ' + c.problems.slice(0, 2).join(' | ') : ''); }).join('; '));
+      a.ok(!Object.keys(ws.ws13.overlay).some(function (k) { return /^(Fw|SharedFramework)\//.test(k); }), 'no merged library is created');
+      a.ok(ACE.bar.parseDotProject(cur(ws, 'AuditL/.project')).natures.indexOf('com.ibm.etools.msgbroker.tooling.sharedLibraryNature') >= 0 && ACE.bar.parseDotProject(cur(ws, 'FwL/.project')).natures.indexOf('com.ibm.etools.msgbroker.tooling.sharedLibraryNature') >= 0, 'AuditL and FwL keep their names and become shared libraries');
+      a.ok(/^BROKER SCHEMA AuditL\r?\n/.test(cur(ws, 'AuditL/AuditL/Audit.esql')) && /^BROKER SCHEMA FwL\r?\n/.test(cur(ws, 'FwL/FwL/Common.esql')), 'each library uses a schema named after itself');
+      var nested = cur(ws, 'FwL/FwL/local/AuditL/AuditSub.subflow');
+      a.ok(nested && /nsURI="FwL\/local\/AuditL\/AuditSub\.subflow"/.test(nested) && /computeExpression="esql:\/\/routine\/AuditL#Audit_Mod\.Main"/.test(nested), 'FwL holds its own copy of AuditSub that runs AuditL\'s module');
+      var fs = cur(ws, 'FwL/FwL/FwSub.subflow');
+      a.ok(/xmlns:FwL_local_AuditL_AuditSub\.subflow="FwL\/local\/AuditL\/AuditSub\.subflow"/.test(fs) && /Hook="esql:\/\/routine\/FwL#Fw_AuditHook\.Main"/.test(fs), 'FwSub nests the local copy and its library-to-library hook resolves inside FwL');
+      a.ok(/CALL AuditL\.AuditLog\(v\)/.test(cur(ws, 'FwL/FwL/Common.esql')), 'call into the other library schema-qualified');
+      a.ok(cur(ws, 'App/App/local/FwL/FwSub.subflow') && /"App\/local\/FwL\/FwSub\.subflow"/.test(cur(ws, 'App/App.msgflow')) && /"FwL\/FwPlain\.subflow"/.test(cur(ws, 'App/App.msgflow')), 'application: hooked subflow local, other subflow shared');
+      a.ok(/CALL FwL\.FwProc\(C1\)/.test(cur(ws, 'App/App.esql')) && /DECLARE xsi NAMESPACE/.test(cur(ws, 'App/FwL_Constants.esql')), 'application call qualified; namespace/constant copied');
+      a.eq(ACE.libconv.descriptorRefs(cur(ws, 'App/application.descriptor')).sort().join(','), 'AuditL,FwL', 'application descriptor lists both shared libraries');
+      a.eq(ACE.libconv.descriptorRefs(cur(ws, 'FwL/library.descriptor')).join(','), 'AuditL', 'FwL descriptor lists AuditL');
+      var r2 = ACE.workflow.convertLibraries(); a.eq(r2.targets[0].applied.length, 0, 'repeat run changes nothing');
+      ACE.workflow.undoLibraryConversion(); a.eq(Object.keys(ws.ws13.overlay).length, 0, 'Undo restores everything');
+    });
+  });
+  test('S02', 'Java routines in a shared library get CLASSLOADER "{Library}"; build commands name the Java project', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC(SEP, async function () {
+      var ws = await sepLoad([
+        { name: 'App', kind: 'app', refs: ['JLib'], files: { 'App.esql': 'CREATE COMPUTE MODULE App_C\nEND MODULE;\n' } },
+        { name: 'JLib', kind: 'static', refs: ['JPrj'], files: { 'com/j/Util.esql': 'BROKER SCHEMA com.j\n\nCREATE FUNCTION enc(IN s CHARACTER) RETURNS CHARACTER\nLANGUAGE JAVA\nEXTERNAL NAME "p.Sec.enc";\n\nCREATE FUNCTION other(IN s CHARACTER) RETURNS CHARACTER\nLANGUAGE JAVA\nEXTERNAL NAME "q.Elsewhere.run";\n' } },
+        { name: 'JPrj', kind: 'java', files: { 'src/p/Sec.java': 'package p; public class Sec { public static String enc(String s) { return s; } }\n' } }]);
+      var run = ACE.workflow.convertLibraries(), t = cur(ws, 'JLib/com/j/Util.esql');
+      a.ok(/EXTERNAL NAME "p\.Sec\.enc" CLASSLOADER "\{JLib\}";/.test(t), 'class from the referenced Java project -> CLASSLOADER "{JLib}"');
+      a.ok(/EXTERNAL NAME "q\.Elsewhere\.run";/.test(t), 'class not in the library -> unchanged');
+      a.ok(run.targets[0].validation.checks.filter(function (c) { return c.id === 'V12'; })[0].status === 'PASS', 'V12 passes');
+      a.ok(/--project JLib .*--project JPrj/.test(run.targets[0].state.build.commands[0].command), 'build command names the Java project so ibmint compiles it');
+    });
+  });
+  test('S03', 'Real workspace ZIP(s): the separate strategy keeps all library names; ContentCreate converts and validates', { category: 'Library conversion (separate)', requires: 'workspace' }, async function (a, env) {
+    var files = env.workspaceFiles && env.workspaceFiles.length ? env.workspaceFiles : [env.workspaceFile];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (!/ContentCreate/i.test(f.name)) continue;
+      await withLC(SEP, async function () {
+        ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, SEP);
+        var ws = await load(await util.readFileBytes(f), f.name), p = plan13(ws);
+        a.ok(p.blockedCount === 0 && p.converted.length === 4, f.name + ': 4 libraries convert, names kept: ' + p.converted.join(', '));
+        var run = ACE.workflow.convertLibraries();
+        a.ok(run.targets[0].validation.passed, f.name + ': validation ' + run.targets[0].validation.checks.map(function (c) { return c.id + ' ' + c.status; }).join(', '));
+        ACE.workflow.undoLibraryConversion();
+      });
+    }
+    a.ok(true, 'done');
+  });
+
+  /* ---------- 15. external validation ---------- */
   test('X01', 'ACE 12.0.5 Toolkit imports the ACE 12 package and builds without errors', { category: 'IBM Toolkit validation', external: true });
   test('X02', 'ACE 13.0.8 Toolkit imports the ACE 13 package; Java project builds; BAR can be built', { category: 'IBM Toolkit validation', external: true });
   test('X03', 'BAR rebuilt in ACE 13 deploys to an ACE 13.0.8 integration server (Java 17) and passes regression tests', { category: 'IBM runtime validation', external: true });

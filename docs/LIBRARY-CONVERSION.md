@@ -53,7 +53,30 @@ These checks ran on the development machine, outside the tool:
 
 On a real 5-project workspace (private) the analysis correctly blocked all three framework libraries: ESQL and subflows in the default schema. It reported the missing library through which the service reaches them, and changed nothing.
 
-## 5. Refactor strategy (default): converting real framework libraries
+## 5. Strategies
+
+| Strategy | What it does | When |
+|---|---|---|
+| **separate** (default) | Every library **keeps its name** and becomes its own shared library. Only what the runtime rules below require is changed. | Recommended. |
+| merge | Merges the dependency-connected libraries into one shared library (section 5.2). | When you want one deployable framework. |
+| in-place | Changes only `.project` natures and descriptors (section 2). | Libraries that already follow the shared-library rules. |
+
+### 5.1 Separate strategy (default)
+
+For each converted library `L` (name unchanged; R-numbers refer to the runtime table in 5.2):
+1. `.project` gets the shared-library natures; every consumer's descriptor gets a `<sharedLibraryReference>` to `L`.
+2. Default-schema ESQL and subflows move into broker schema `L` (folder `L/`), because R9 and the subflow rule forbid the default schema. Subflow `nsURI`, `nsPrefix` and `bundleName` are updated (R10).
+3. A subflow of `L` that nests a subflow of another library `M` gets a copy of that subflow at `L/local/M/<name>.subflow` (R8 forbids nesting across shared libraries). `M` itself is unchanged and still shared.
+4. In an application, a subflow that receives an application module (hook, R7) is copied to `<App>/local/<Owner>/`. Un-hooked subflows are used from the shared library (R2, R3).
+5. Calls to routines of another library become schema-qualified (R5). Schema-level `CONSTANT` and `NAMESPACE` declarations used across libraries are copied next to the user (R6).
+6. `LANGUAGE JAVA` routines whose class is in `L`'s Java projects or JARs get `CLASSLOADER "{L}"`. Without it the routine cannot find the class in a shared library (BIP3202E/BIP2943E observed; IBM docs, CREATE PROCEDURE, example 4).
+7. Project references needed at run time are added; a reference cycle between shared libraries blocks the run (RF-CYCLE).
+
+**Build:** `ibmint package --project L1 --project L2 ...` builds each library as a `.shlibzip`. Java projects a shared library references must also be named (`--project <JavaProject>`), otherwise `ibmint` does not compile them; the conversion report's build commands include them. Deploy the shared libraries with or before the applications.
+
+**Evidence:** on a real workspace with one application and four interdependent framework libraries, all four libraries kept their names; validation V1–V12 passed; `ibmint` built four `.shlibzip` files and the application; all four shared libraries loaded on an ACE 13.0.2.0 integration server. The only runtime errors left were also produced by the original static source (a subflow referring to a module name that does not exist in it, and an environment-dependent data source).
+
+### 5.2 Merge strategy: converting real framework libraries
 
 Real framework libraries usually cannot just change type. In the two real workspaces tested:
 - ESQL and subflows were in the default schema;
@@ -61,7 +84,7 @@ Real framework libraries usually cannot just change type. In the two real worksp
 - libraries pass their own ESQL modules into other libraries' subflows;
 - applications pass **their** ESQL modules into framework subflows through promoted properties ("hooks").
 
-Each rule below was observed on an ACE 13.0.2.0 integration server before the refactoring was built:
+Each rule below (used by both the separate and merge strategies) was observed on an ACE 13.0.2.0 integration server before the refactoring was built:
 
 | # | Behaviour | Result |
 |---|---|---|
@@ -76,7 +99,7 @@ Each rule below was observed on an ACE 13.0.2.0 integration server before the re
 | R9 | Default-schema ESQL in a shared library | **fails**: BIP4129E |
 | R10 | Subflow schema taken from the translation `bundleName` (not only the folder) | without it: BIP1369E |
 
-What the refactoring does:
+What the merge strategy does:
 1. **Merges** the dependency-connected static libraries into **one** shared library (default name `SharedFramework`; set your own). R8 and library-to-library hooks then become same-library references (R1).
 2. **Moves** their default-schema ESQL and subflows into **one** named broker schema (default: the library name in lower case). Their mutual unqualified calls and constants keep working. Subflow `nsURI`, `nsPrefix` and `bundleName` are updated (R10).
 3. **Keeps local to each application** every subflow that receives an application module (R7), plus the subflows that hook is forwarded to. The local copies are in schema `<schema>.local`; they use the shared modules (R4) and nest the shared subflows (R3). The shared library still contains the whole framework, so its content does not depend on which service is converted.
@@ -108,6 +131,6 @@ The first runs of this check found three real problems that only the runtime rev
 - **Toolchain:** probes, builds and runtime tests used ACE **13.0.2.0**. Neither ACE 12.0.5 nor 13.0.8 was available. IBM's 12.0 and 13.0 shared-library documentation gives the same rules. `ibmint package` is documented for 12.0, but its availability on 12.0.5 specifically was not verified.
 - **Usage evidence** (which artifacts call a library) comes from parsed subflow references and ESQL `CALL`s. Function calls inside expressions are not traced.
 - **Java:** Java projects referenced by a converted library are loaded by the shared library's own class loader. Applications must not depend on those classes directly. The report asks for a test of every JavaCompute node and `LANGUAGE JAVA` routine.
-- **BAR input:** BAR input has no original project metadata, so the analysis runs on the generated `.project` files. For conversion, a Toolkit workspace ZIP is the reliable input. The refactor strategy requires a workspace ZIP.
+- **BAR input:** BAR input has no original project metadata, so the analysis runs on the generated `.project` files. For conversion, a Toolkit workspace ZIP is the reliable input. The separate and merge strategies require a workspace ZIP.
 - **Startup is not message testing:** "starts identically" means every flow, subflow and ESQL module was loaded and compiled by the runtime. Sending real messages through the services needs their back ends (MQ, databases, SOAP partners) and was not done.
-- **Local copies:** hooked subflows are copied into each application, so a change to *those* subflows still needs the services rebuilt. Everything else in the framework is shared.
+- **Local copies:** hooked subflows (and, in the separate strategy, subflows nested across libraries) are copied, so a change to *those* subflows still needs the services rebuilt. Everything else in the framework is shared.

@@ -29,7 +29,7 @@
   };
   var BASE_NS = 'http://com.ibm.etools.mft.descriptor.base';
   LC.KIND = 'library-conversion';
-  LC.DEFAULTS = { enabled: false, targets: ['ace13'], strategy: 'refactor', sharedLibraryName: '', schema: '', libraries: 'auto', knownSharedLibraries: [], validateAfterConversion: true };
+  LC.DEFAULTS = { enabled: false, targets: ['ace13'], strategy: 'separate', sharedLibraryName: '', schema: '', libraries: 'auto', knownSharedLibraries: [], validateAfterConversion: true };
 
   /* Evidence behind each rule. basis: verified (probe on ACE 13.0.2.0), documented (IBM docs), toolkit (Toolkit builder rule text). */
   var DOC12 = 'https://www.ibm.com/docs/en/SSTTDS_12.0/com.ibm.etools.mft.doc/bc23067_.html', DOC13 = 'https://www.ibm.com/docs/en/SSTTDS_13.0/com.ibm.etools.mft.doc/bc23067_.html';
@@ -219,7 +219,7 @@
   LC.analyze = function (ws, cfg, copy) {
     cfg = Object.assign({}, LC.DEFAULTS, cfg || {});
     copy = copy || 'ws13';
-    if (cfg.strategy === 'refactor') { var rr = ACE.libref.analyze(ws, cfg, copy); rr.edits = LC.consolidate(rr.edits); return rr; }
+    if (cfg.strategy === 'refactor' || cfg.strategy === 'separate') { var rr = cfg.strategy === 'separate' ? ACE.libref.analyzeSeparate(ws, cfg, copy) : ACE.libref.analyze(ws, cfg, copy); rr.edits = LC.consolidate(rr.edits); return rr; }
     var st = LC.state(ws, copy), known = {};
     (cfg.knownSharedLibraries || []).forEach(function (n) { if (n) known[n] = true; });
     var res = LC.emptyResult(copy);
@@ -361,7 +361,11 @@
       apps = apps.map(function (a) { return { name: a.name, refs: uses[a.name] || a.refs.filter(function (r) { return willBeShared[r]; }) }; });
     }
     var lines = [], ver = res.target === 'ace12' ? window.ACE_VERSIONS.source : window.ACE_VERSIONS.target;
-    if (shared.length) lines.push({ purpose: 'Shared libraries (deploy first, once per integration server)', command: 'ibmint package --input-path <workspace> --output-bar-file shared-libraries.bar ' + shared.map(function (n) { return '--project ' + n; }).join(' ') });
+    // Java projects referenced by the shared libraries must be named too: ibmint compiles a Java project only when
+    // it is listed with --project (verified on ACE 13.0.2.0; otherwise the library starts without its classes).
+    var javaProjects = util.uniq([].concat.apply([], shared.map(function (n) { var p = st.byName[n]; return p ? p.refs.filter(function (r) { return st.byName[r] && st.byName[r].kind === 'java'; }) : []; })));
+    (res.converted || []).forEach(function (n) { var p = st.byName[n]; if (p) p.refs.forEach(function (r) { if (st.byName[r] && st.byName[r].kind === 'java' && javaProjects.indexOf(r) < 0) javaProjects.push(r); }); });
+    if (shared.length) lines.push({ purpose: 'Shared libraries (deploy first, once per integration server)' + (javaProjects.length ? '; Java project(s) ' + javaProjects.join(', ') + ' named so that ibmint compiles them into the libraries' : ''), command: 'ibmint package --input-path <workspace> --output-bar-file shared-libraries.bar ' + shared.concat(javaProjects).map(function (n) { return '--project ' + n; }).join(' ') });
     apps.forEach(function (a) {
       var uses = a.refs.filter(function (r) { return willBeShared[r]; });
       lines.push({ purpose: 'Application ' + a.name + (uses.length ? ' (uses shared ' + uses.join(', ') + '; deploy shared-libraries.bar first)' : ''), command: 'ibmint package --input-path <workspace> --output-bar-file ' + a.name + '.bar --project ' + a.name });
@@ -449,7 +453,7 @@
       var del = d.filter(function (x) { return x.op === '-'; }).length, add = d.filter(function (x) { return x.op === '+'; });
       if (del || add.length !== 1 || add[0].text.trim() !== '<nature>' + NAT.shared + '</nature>') stray.push(p + ' (unexpected change besides the shared nature)');
     });
-    if ((cfg && cfg.strategy) !== 'refactor') check('V6', 'Only .project natures and descriptor references were changed; every other file is unchanged', stray);
+    if ((cfg && cfg.strategy) === 'in-place') check('V6', 'Only .project natures and descriptor references were changed; every other file is unchanged', stray);
     else check('V6', 'Refactoring touched only library files and the references to them (no unrelated file changed)', convPaths.filter(function (p) { return !/\.(project|descriptor|esql|subflow|msgflow)$/.test(p) && !ov[p].history.some(function (h) { return h.created || h.deleted; }); }));
     // V8-V11: resolution rules observed on the ACE 13.0.2.0 runtime (docs/LIBRARY-CONVERSION.md section 5)
     var defs = {}; // project -> {subflows: {ns:1}, modules: {schema#M:1}, routines: {SCHEMA.NAME:1}}
@@ -525,6 +529,16 @@
     check('V9', 'Every ESQL module reference resolves; no application module is passed into a shared subflow', v9);
     check('V10', 'No default-schema (bare) module references inside shared libraries', v10);
     check('V11', 'Calls from applications to shared-library routines are schema-qualified', v11);
+    var v12 = [];
+    shared.forEach(function (p) {
+      var cls = ACE.libref.libraryClasses(ws, st, [p.name]);
+      p.files.forEach(function (f) {
+        if (!/\.esql$/i.test(f.rel)) return;
+        var probe = ACE.libref.addJavaClassloader(f.text() || '', p.name, function (c) { return !!cls[c]; });
+        if (probe.count) v12.push(f.outPath + ': LANGUAGE JAVA routine(s) for ' + util.uniq(probe.classes).join(', ') + ' without CLASSLOADER "{' + p.name + '}" (BIP3202E/BIP2943E at run time)');
+      });
+    });
+    check('V12', 'Java routines in shared libraries load their classes from the shared library (CLASSLOADER clause)', v12);
     if (preexisting.length) checks.push({ id: 'V0', title: 'References that were already unresolved in the input (not caused by the conversion; fix them in the source)', status: 'WARN', problems: util.uniq(preexisting) });
     var again = LC.analyze(ws, cfg, copy);
     check('V7', 'Repeatable: analysing the converted copy again plans no further changes', again.edits.map(function (e) { return 'would change ' + e.path + ': ' + e.notes.join('; '); }));

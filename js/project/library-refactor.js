@@ -331,9 +331,12 @@
     var settings = {};
     group.forEach(function (n) { P[n].files.forEach(function (f) { if (/^\.settings\//.test(f.rel) && !settings[f.rel]) { settings[f.rel] = true; create(N + '/' + f.rel, N, f.text(), 'Eclipse settings from ' + n); } }); });
     // 2. ESQL: relocated files get the BROKER SCHEMA line; files in named schemas move unchanged
+    var groupCls = LR.libraryClasses(ws, st, group);
     esqlG.forEach(function (e) {
       var eol = /\r\n/.test(e.text) ? '\r\n' : '\n', after = e.sym.schema ? e.text : 'BROKER SCHEMA ' + S + eol + eol + e.text.replace(/^﻿/, '');
-      create(N + '/' + e.dest, N, after, e.sym.schema ? 'moved from ' + e.lib + ' (schema ' + e.sym.schema + ' unchanged)' : 'moved from ' + e.lib + '/' + e.rel + ' into broker schema ' + S);
+      var jc = LR.addJavaClassloader(after, N, function (c) { return !!groupCls[c]; });
+      after = jc.text;
+      create(N + '/' + e.dest, N, after, (e.sym.schema ? 'moved from ' + e.lib + ' (schema ' + e.sym.schema + ' unchanged)' : 'moved from ' + e.lib + '/' + e.rel + ' into broker schema ' + S) + (jc.count ? '; ' + jc.count + ' Java routine(s) get CLASSLOADER "{' + N + '}"' : ''));
       del(e.f, e.lib);
     });
     // 3. subflows of the group (all stay in the shared library)
@@ -414,5 +417,245 @@
     return finish();
 
     function finish() { res.build = LC.buildPlan(LC.state(ws, copy), res, (function () { var o = {}; already.forEach(function (n) { o[n] = true; }); if (res.sharedLibrary) o[res.sharedLibrary] = true; Object.keys(known).forEach(function (n) { o[n] = true; }); return o; })(), res.sharedLibrary ? { addProjects: [res.sharedLibrary], apps: st.projects.filter(function (p) { return p.kind === 'application'; }).map(function (p) { return { name: p.name, uses: p.refs.some(function (r) { return G[r]; }) ? [res.sharedLibrary] : [] }; }) } : null); return res; }
+  };
+  /* LANGUAGE JAVA routines in a shared library need CLASSLOADER "{Library}": without the clause the class is
+   * loaded by the EGShared class loader, which does not see the shared library's Java (verified on ACE 13.0.2.0:
+   * BIP3202E/BIP2943E without it, the library starts with it; IBM docs CREATE PROCEDURE, example 4).
+   * hasClass(className) says whether the library (its JARs or referenced Java projects) contains the class. */
+  LR.addJavaClassloader = function (text, lib, hasClass) {
+    var code = mask(text), re = /\bCREATE\s+(?:FUNCTION|PROCEDURE)\s+\w+\s*\(/gi, m, inserts = [];
+    while ((m = re.exec(code))) {
+      var rest = code.slice(m.index), end = rest.search(/;|\bBEGIN\b/i), decl = end < 0 ? rest : rest.slice(0, end);
+      if (!/\bLANGUAGE\s+JAVA\b/i.test(decl) || /\bCLASSLOADER\b/i.test(decl)) continue;
+      var en = /\bEXTERNAL\s+NAME\s+"/i.exec(decl); if (!en) continue;
+      var qStart = m.index + en.index + en[0].length - 1, qEnd = text.indexOf('"', qStart + 1); if (qEnd < 0) continue;
+      var ext = text.slice(qStart + 1, qEnd), cls = ext.split('.').slice(0, -1).join('.');
+      if (!hasClass(cls)) continue;
+      inserts.push({ at: qEnd + 1, cls: cls });
+    }
+    var out = text; inserts.slice().reverse().forEach(function (x) { out = out.slice(0, x.at) + ' CLASSLOADER "{' + lib + '}"' + out.slice(x.at); });
+    return { text: out, count: inserts.length, classes: inserts.map(function (x) { return x.cls; }) };
+  };
+  /* Classes available to library L: Java source in referenced Java projects and classes in JARs inside L. */
+  LR.libraryClasses = function (ws, st, libs) {
+    var P = st.byName, set = {};
+    libs.forEach(function (L) {
+      (P[L] ? P[L].refs : []).forEach(function (r) { var jp = P[r]; if (!jp || jp.kind !== 'java') return; jp.files.forEach(function (f) { var m = /^(?:src\/)?(.+)\.java$/.exec(f.rel); if (m) set[m[1].replace(/\//g, '.')] = true; }); });
+      (ws.jars || []).forEach(function (j) { if (j.occurrences.some(function (o) { return o.split('/')[0] === L || o.indexOf(L + '/') === 0 || o.indexOf('/' + L + '/') >= 0; })) (j.info.classes || []).forEach(function (c) { set[c.name.replace(/\//g, '.')] = true; }); });
+    });
+    return set;
+  };
+
+  /* Add <project> references to a .project text (keeps everything else; no duplicates). */
+  LR.addProjectRefs = function (text, names) {
+    var dp = ACE.bar.parseDotProject(text), add = names.filter(function (n) { return dp.projects.indexOf(n) < 0; });
+    if (!add.length) return text;
+    var eol = /\r\n/.test(text) ? '\r\n' : '\n', m = /([ \t]*)<\/projects>/.exec(text);
+    if (m) { var ind = m[1] + '\t'; return text.slice(0, m.index) + add.map(function (n) { return ind + '<project>' + util.esc(n) + '</project>' + eol; }).join('') + text.slice(m.index); }
+    var e = /<projects\s*\/>/.exec(text); if (!e) return text;
+    return text.slice(0, e.index) + '<projects>' + eol + add.map(function (n) { return '\t\t<project>' + util.esc(n) + '</project>' + eol; }).join('') + '\t</projects>' + text.slice(e.index + e[0].length);
+  };
+
+  /* ---------- strategy "separate": every library keeps its name and stays a separate shared library ----------
+   * Same runtime rules as above. Per library L:
+   *   - .project gets the sharedLibraryNature; default-schema ESQL and subflows move into schema L (folder L/);
+   *   - a subflow of another library nested in L is copied into L (schema L.local.<Owner>) - R8; the copy's compute
+   *     nodes run the owner's modules (verified: a shared library can run a module of a shared library it references);
+   *   - calls to other libraries' routines are schema-qualified; their constants/namespaces used by L are copied;
+   *   - references needed at run time are added to .project and library.descriptor.
+   * Applications: as in the merge strategy, but each library keeps its own name and schema. */
+  LR.analyzeSeparate = function (ws, cfg, copy) {
+    var LC = ACE.libconv, st = LC.state(ws, copy), P = st.byName, res = LC.emptyResult(copy), known = {};
+    (cfg.knownSharedLibraries || []).forEach(function (n) { known[n] = true; });
+    res.strategy = 'separate';
+    res.projects = st.projects.map(function (p) { return { name: p.name, kind: p.kind, references: p.refs.map(function (r) { return { project: r, kind: P[r] ? P[r].kind : known[r] ? 'shared-library (known)' : 'missing' }; }), referencedBy: [], metadata: 'original' }; });
+    var already = st.projects.filter(function (p) { return p.kind === 'shared-library'; }).map(function (p) { return p.name; });
+    function finish(target) { res.build = LC.buildPlan(LC.state(ws, copy), res, (function () { var o = {}; already.concat(res.converted || []).forEach(function (n) { o[n] = true; }); Object.keys(known).forEach(function (n) { o[n] = true; }); return o; })(), target || null); return res; }
+    if (ws.inputKind !== 'workspace') { res.errors.push(LR.RULES['RF-BAR-INPUT']); return finish(); }
+    var statics = st.projects.filter(function (p) { return p.kind === 'static-library'; }).map(function (p) { return p.name; });
+    var sel = cfg.libraries === 'auto' || !cfg.libraries ? statics.slice() : cfg.libraries.filter(function (n) { return statics.indexOf(n) >= 0; });
+    var G = {}, referencedBy = {};
+    st.projects.forEach(function (p) { p.refs.forEach(function (r) { (referencedBy[r] = referencedBy[r] || []).push(p.name); }); });
+    sel.forEach(function (n) { G[n] = true; });
+    var grown = true;
+    while (grown) { grown = false; Object.keys(G).forEach(function (n) { P[n].refs.concat(referencedBy[n] || []).forEach(function (r) { if (P[r] && P[r].kind === 'static-library' && !G[r]) { G[r] = true; grown = true; } }); }); }
+    var group = Object.keys(G).sort();
+    if (!group.length) { res.notes.push('No static library to convert.'); return finish(); }
+    function schemaOf(L) { return L; }
+    function pathOf(sch) { return sch.replace(/\./g, '/'); }
+    res.target = { group: group, schemas: group.map(function (L) { return L + ' -> schema ' + schemaOf(L); }) };
+    var blockers = [];
+    function block(code, detail, where) { blockers.push({ code: code, rule: LR.RULES[code] || code, detail: detail, locations: where || [] }); }
+    var consumers = st.projects.filter(function (p) { return !G[p.name]; });
+    st.projects.forEach(function (p) { p.refs.forEach(function (r) { if (!P[r] && !known[r]) block('RF-MISSING-PROJECT', p.name + ' references "' + r + '"', [{ file: p.dot.path }]); }); });
+    consumers.forEach(function (c) { if (c.kind === 'integration-project' && c.refs.some(function (r) { return G[r]; })) block('RF-INTEGRATION-PROJECT', c.name, [{ file: c.dot.path }]); });
+    group.forEach(function (L) { if (!/^[A-Za-z_]\w*$/.test(L)) block('RF-SCHEMA-TAKEN', 'library name "' + L + '" cannot be used as a broker schema name'); });
+
+    // inventory and owner maps
+    var subs = {}, esqls = [], modOwner = {}, routineOwner = {}, declOwner = {}, esqlProps = {};
+    group.forEach(function (L) {
+      P[L].files.forEach(function (f) {
+        var rel = f.rel;
+        if (/\.msgflow$/i.test(rel)) block('RF-MSGFLOW', L + '/' + rel, [{ file: f.outPath }]);
+        else if (/\.(xml|xsl|xslt|idl|mset|mxsd)$/i.test(rel) && !/^META-INF\//i.test(rel)) block('RF-UNSUPPORTED-RESOURCE', L + '/' + rel, [{ file: f.outPath }]);
+        else if (/\.esql$/i.test(rel)) {
+          var t = f.text() || '', sy = LR.esqlSymbols(t);
+          esqls.push({ lib: L, f: f, text: t, sym: sy, rel: rel, moved: !sy.schema, dest: sy.schema ? rel : pathOf(schemaOf(L)) + '/' + util.basename(rel) });
+          sy.modules.forEach(function (m) { var k = sy.schema + '#' + m; if (modOwner[k] && modOwner[k] !== L) block('RF-NAME-CONFLICT', 'module ' + m + ' in ' + modOwner[k] + ' and ' + L); modOwner[k] = L; });
+          if (!sy.schema) {
+            sy.routines.forEach(function (r) { var u = r.toUpperCase(); if (routineOwner[u] && routineOwner[u] !== L) block('RF-NAME-CONFLICT', 'routine ' + r + ' in ' + routineOwner[u] + ' and ' + L); routineOwner[u] = L; });
+            sy.decls.forEach(function (d) { declOwner[d.name.toUpperCase()] = { lib: L, name: d.name, kind: d.kind, stmt: d.stmt, file: rel }; });
+          }
+        } else if (/\.subflow$/i.test(rel)) {
+          var tx = f.text() || '', ns = nsOf(tx) || rel, def = rel.indexOf('/') < 0;
+          subs[ns] = { owner: L, f: f, text: tx, rel: rel, oldNs: ns, newNs: def ? pathOf(schemaOf(L)) + '/' + rel : ns, dest: def ? pathOf(schemaOf(L)) + '/' + rel : rel, props: promoted(tx) };
+          var set = {}; Object.keys(subs[ns].props).forEach(function (k) { set[k] = true; }); esqlProps[ns] = set; esqlProps[subs[ns].newNs] = set;
+        }
+      });
+    });
+    var modMap = {}; Object.keys(modOwner).forEach(function (k) { if (k.charAt(0) === '#') modMap[k] = schemaOf(modOwner[k]); });
+    // schema names must be free elsewhere
+    consumers.forEach(function (c) { c.files.forEach(function (f) { if (/\.esql$/i.test(f.rel)) { var sy = LR.esqlSymbols(f.text() || ''); if (G[sy.schema] || group.some(function (L) { return sy.schema.indexOf(L + '.') === 0; })) block('RF-SCHEMA-TAKEN', c.name + '/' + f.rel + ' already uses schema ' + sy.schema, [{ file: f.outPath }]); } }); });
+    // library code calling application routines
+    var appRoutines = {};
+    consumers.forEach(function (c) { c.files.forEach(function (f) { if (/\.esql$/i.test(f.rel)) { var sy = LR.esqlSymbols(f.text() || ''); if (!sy.schema) sy.routines.forEach(function (r) { appRoutines[r.toUpperCase()] = c.name; }); } }); });
+    esqls.forEach(function (e) { callSites(e.sym, appRoutines).forEach(function (c) { if (!routineOwner[c.name.toUpperCase()]) block('RF-LIB-CALLS-APP', e.lib + '/' + e.rel + ' calls ' + c.name + ' (defined in ' + appRoutines[c.name.toUpperCase()] + ')', [{ file: e.f.outPath, line: util.lineAt(e.text, c.index) }]); }); });
+
+    var needRefs = {}, created = [], edits = res.edits, localOf = {}, constCopies = {}, classesOf = {};
+    function needRef(C, L) { if (C !== L && G[L]) (needRefs[C] = needRefs[C] || {})[L] = true; }
+    function scopeOf(L) { var out = {}; out[L] = true; (P[L] ? P[L].refs : []).forEach(function (r) { out[r] = true; }); return out; }
+    function isApp(C) { return !G[C]; }
+    function localNsFor(C, T) { var s = subs[T]; return (isApp(C) ? C : pathOf(schemaOf(C))) + '/local/' + s.owner + '/' + util.basename(s.newNs); }
+    function hookedFor(T, attrs) {
+      var s = subs[T], sc = scopeOf(s.owner), a, re = /(\w+)="esql:\/\/routine\/([\w.]*)#([^"#]+?)\.Main"/g;
+      while ((a = re.exec(attrs))) { var own = modOwner[a[2] + '#' + a[3]]; if (!own || !sc[own]) return true; }
+      var props = esqlProps[T] || {}, b, br = /(\s)([\w.]+)="([A-Za-z_][^"\s.#\/:]*)"/g;
+      while ((b = br.exec(attrs))) { if (!props[b[2]]) continue; var own2 = modOwner['#' + b[3]]; if (!own2 || !sc[own2]) return true; }
+      return false;
+    }
+    /* Rewrite a flow/subflow text that belongs to container C (its own file or a local copy). */
+    function processFlow(C, text, selfNs) {
+      var map = {}, notes = [];
+      var fileNodes = subflowNodes(text);
+      var bySub = {}; fileNodes.forEach(function (nd) { if (subs[nd.ns]) (bySub[nd.ns] = bySub[nd.ns] || []).push(nd); });
+      Object.keys(bySub).forEach(function (T) {
+        var s = subs[T];
+        if (s.owner === C) { map[T] = s.newNs; return; }
+        var local = !isApp(C) || bySub[T].some(function (nd) { return hookedFor(T, nd.attrs); });
+        if (local) map[T] = localize(C, T);
+        else { map[T] = s.newNs; needRef(C, s.owner); }
+      });
+      // module references: qualified with the owner's schema; the owner must be visible
+      moduleRefs(text).forEach(function (r) { var o = modOwner[r.schema + '#' + r.module]; if (o) needRef(C, o); });
+      var bare = /(\s)(computeExpression|filterExpression|statement)="([A-Za-z_][^"\s.#\/:]*)"/g, b;
+      while ((b = bare.exec(text))) { var o2 = modOwner['#' + b[3]]; if (o2) needRef(C, o2); }
+      var dv = /defaultValueLiteral="([A-Za-z_][^"\s.#\/:]*)"[^>]*>\s*<eType[^>]*#\/\/EsqlModule"/g, d; while ((d = dv.exec(text))) { var o3 = modOwner['#' + d[1]]; if (o3) needRef(C, o3); }
+      var r1 = LR.rewriteSubflowRefs(text, map, selfNs), r2 = LR.rewriteModuleRefs(r1.text, modMap, esqlProps);
+      return { text: r2.text, notes: r1.notes.concat(r2.count ? [r2.count + ' ESQL module reference(s) schema-qualified'] : []) };
+    }
+    function localize(C, T) {
+      var key = C + '|' + T; if (localOf[key]) return localOf[key];
+      var ns = localNsFor(C, T); localOf[key] = ns;
+      var r = processFlow(C, subs[T].text, ns);
+      created.push({ path: C + '/' + ns, project: C, text: r.text, note: 'local copy of ' + subs[T].owner + '/' + subs[T].rel + (isApp(C) ? ' (receives application ESQL modules - not possible inside a shared library, BIP4127E)' : ' (a shared library cannot use a subflow of another shared library, BIP1360E)') });
+      return ns;
+    }
+    /* ESQL text of container C: qualify calls to other libraries' routines; collect constants to copy. */
+    function processEsql(C, text, schemaOfFile) {
+      var sy = LR.esqlSymbols(text), own = {}, names = {};
+      sy.routines.forEach(function (x) { own[x.toUpperCase()] = true; });
+      Object.keys(routineOwner).forEach(function (u) { if (routineOwner[u] !== C && !own[u] && !(isApp(C) && appRoutines[u] === C)) names[u] = true; });
+      var sites = callSites(sy, names), out = text;
+      sites.slice().reverse().forEach(function (s2) { var o = routineOwner[s2.name.toUpperCase()]; needRef(C, o); out = out.slice(0, s2.index) + schemaOf(o) + '.' + out.slice(s2.index); });
+      var code = mask(text);
+      Object.keys(declOwner).forEach(function (u) {
+        var d = declOwner[u]; if (d.lib === C || schemaOfFile) return;
+        if (new RegExp('\\bDECLARE\\s+' + d.name + '\\b', 'i').test(code)) return;
+        var used = d.kind === 'NAMESPACE' ? (new RegExp('(^|[^\\w])' + d.name + '\\s*:(?!:)', 'i').test(code) || new RegExp('(^|[^.\\w])' + d.name + '\\b(?!\\s*[(:])', 'i').test(code)) : new RegExp('(^|[^.\\w])' + d.name + '\\b(?!\\s*\\()', 'i').test(code);
+        if (!used) return;
+        if (d.kind === 'SHARED' || d.kind === 'EXTERNAL') block('RF-CONSTANT-USE', C + ' uses ' + d.kind + ' ' + d.name + ' of ' + d.lib); else (constCopies[C] = constCopies[C] || {})[u] = true;
+      });
+      return { text: out, notes: sites.length ? [sites.length + ' call(s) schema-qualified: ' + util.uniq(sites.map(function (s2) { return s2.name; })).join(', ')] : [] };
+    }
+
+    // libraries
+    group.forEach(function (L) {
+      P[L].files.forEach(function (f) {
+        if (/\.esql$/i.test(f.rel)) {
+          var e = esqls.filter(function (x) { return x.f === f; })[0], r = processEsql(L, e.text, e.sym.schema);
+          var eol = /\r\n/.test(e.text) ? '\r\n' : '\n', after = e.moved ? 'BROKER SCHEMA ' + schemaOf(L) + eol + eol + r.text.replace(/^﻿/, '') : r.text;
+          var libCls = classesOf[L] = classesOf[L] || LR.libraryClasses(ws, st, [L]);
+          var jc = LR.addJavaClassloader(after, L, function (c) { return !!libCls[c]; });
+          if (jc.count) { after = jc.text; r.notes.push(jc.count + ' Java routine(s) get CLASSLOADER "{' + L + '}" (class ' + util.uniq(jc.classes).join(', ') + ' is in the shared library)'); }
+          if (e.moved) { edits.push({ path: L + '/' + e.dest, project: L, before: '', after: after, created: true, deleted: false, notes: ['moved into broker schema ' + schemaOf(L)].concat(r.notes) }); edits.push({ path: f.outPath, project: L, before: e.text, after: null, created: false, deleted: true, notes: ['moved to ' + L + '/' + e.dest] }); }
+          else if (after !== e.text) edits.push({ path: f.outPath, project: L, before: e.text, after: after, created: false, deleted: false, notes: r.notes });
+        } else if (/\.subflow$/i.test(f.rel)) {
+          var s = subs[nsOf(f.text() || '') || f.rel], r2 = processFlow(L, s.text, s.newNs);
+          if (s.dest !== s.rel) { edits.push({ path: L + '/' + s.dest, project: L, before: '', after: r2.text, created: true, deleted: false, notes: ['moved into broker schema ' + schemaOf(L)].concat(r2.notes) }); edits.push({ path: f.outPath, project: L, before: s.text, after: null, created: false, deleted: true, notes: ['moved to ' + L + '/' + s.dest] }); }
+          else if (r2.text !== s.text) edits.push({ path: f.outPath, project: L, before: s.text, after: r2.text, created: false, deleted: false, notes: r2.notes });
+        }
+      });
+    });
+    // consumers (applications and other projects that use the libraries)
+    consumers.forEach(function (c) {
+      if (!c.refs.some(function (r) { return G[r]; })) return;
+      c.files.forEach(function (f) {
+        var t = f.text(); if (t == null) return;
+        if (/\.(msgflow|subflow)$/i.test(f.rel)) { var r = processFlow(c.name, t, null); if (r.text !== t) edits.push({ path: f.outPath, project: c.name, before: t, after: r.text, created: false, deleted: false, notes: r.notes }); }
+        else if (/\.esql$/i.test(f.rel)) { var sy = LR.esqlSymbols(t); var r2 = processEsql(c.name, t, sy.schema); if (r2.text !== t) edits.push({ path: f.outPath, project: c.name, before: t, after: r2.text, created: false, deleted: false, notes: r2.notes }); }
+      });
+    });
+    created.forEach(function (x) { edits.push({ path: x.path, project: x.project, before: '', after: x.text, created: true, deleted: false, notes: [x.note] }); });
+    // constants copies
+    Object.keys(constCopies).forEach(function (C) {
+      var used = Object.keys(constCopies[C]).sort(), byOwner = {};
+      used.forEach(function (u) { (byOwner[declOwner[u].lib] = byOwner[declOwner[u].lib] || []).push(u); });
+      Object.keys(byOwner).forEach(function (O) {
+        var app = isApp(C), path = C + '/' + (app ? '' : pathOf(schemaOf(C)) + '/') + O + '_Constants.esql';
+        var lines = (app ? [] : ['BROKER SCHEMA ' + schemaOf(C), '']).concat(['-- Generated by IBM ACE Migration Workbench (library conversion).', '-- Copies of schema-level CONSTANT / NAMESPACE declarations of shared library ' + O + ' (schema ' + schemaOf(O) + ')', '-- used here. ESQL cannot reference these across broker schemas (BIP2432E), so ' + C + ' keeps its own copy.', '']).concat(byOwner[O].map(function (u) { return declOwner[u].stmt + '   -- from ' + O + '/' + declOwner[u].file; }));
+        edits.push({ path: path, project: C, before: '', after: lines.join('\n') + '\n', created: true, deleted: false, notes: [byOwner[O].length + ' constant/namespace declaration(s) copied from ' + O + ': ' + byOwner[O].map(function (u) { return declOwner[u].name; }).join(', ')] });
+      });
+    });
+    // references (.project + descriptor) and shared nature; cycle check
+    var finalRefs = {};
+    st.projects.forEach(function (p) { finalRefs[p.name] = p.refs.concat(Object.keys(needRefs[p.name] || {})).filter(function (r, i, a) { return a.indexOf(r) === i; }); });
+    var visiting = {}, doneC = {};
+    function dfs(n, stack) { if (doneC[n] || !G[n]) return; if (visiting[n]) { block('RF-CYCLE', stack.slice(stack.indexOf(n)).concat([n]).join(' -> ')); return; } visiting[n] = true; stack.push(n); finalRefs[n].forEach(function (r) { if (G[r]) dfs(r, stack); }); stack.pop(); visiting[n] = false; doneC[n] = true; }
+    group.forEach(function (L) { dfs(L, []); });
+    LR.RULES['RF-CYCLE'] = LR.RULES['RF-CYCLE'] || 'Libraries would reference each other in a cycle; shared libraries cannot (if A references B, B cannot reference A).';
+    // libraries table
+    var blocked = blockers.length > 0;
+    st.projects.filter(function (p) { return /library/.test(p.kind); }).forEach(function (p) {
+      var rec = { name: p.name, currentType: p.kind, decision: null, reasons: [], blockers: [], referencingApplications: (referencedBy[p.name] || []).filter(function (u) { return P[u] && P[u].kind === 'application'; }), referencingLibraries: (referencedBy[p.name] || []).filter(function (u) { return P[u] && P[u].kind !== 'application'; }), usage: [], dependsOn: p.refs.map(function (r) { return { project: r, kind: P[r] ? P[r].kind : 'missing' }; }) };
+      if (p.kind === 'shared-library') { rec.decision = 'already-shared'; rec.reasons.push('already a shared library'); }
+      else if (!G[p.name]) { rec.decision = 'not-selected'; rec.reasons.push('not selected'); }
+      else if (blocked) { rec.decision = 'blocked'; rec.blockers = blockers.map(function (b) { return { code: b.code, rule: b.rule, detail: b.detail, basis: 'refactoring', evidence: b.rule, docs: DOCS, locations: b.locations }; }); res.blockedCount++; }
+      else { rec.decision = 'convert'; rec.reasons.push('stays "' + p.name + '" - becomes a shared library (schema ' + schemaOf(p.name) + ')'); }
+      res.libraries.push(rec);
+    });
+    if (blocked) { res.edits = []; res.manualActions.push('Resolve the blocking items listed for the libraries, then analyse again. Nothing was changed.'); return finish(); }
+    group.forEach(function (L) {
+      var t = P[L].dot.text, n1 = LC.addSharedNature(t); if (n1.error) { res.errors.push(L + ': ' + n1.error); return; }
+      var add = Object.keys(needRefs[L] || {}), after = LR.addProjectRefs(n1.text, add);
+      edits.push({ path: P[L].dot.path, project: L, before: t, after: after, created: false, deleted: false, notes: ['add sharedLibraryNature'].concat(add.length ? ['add reference(s) ' + add.join(', ') + ' (used at run time)'] : []) });
+    });
+    st.projects.forEach(function (p) {
+      if (!G[p.name] && !p.refs.some(function (r) { return G[r]; })) return;
+      if (!G[p.name] && p.kind !== 'application') return;
+      if (!G[p.name]) { var add2 = Object.keys(needRefs[p.name] || {}); if (add2.length) { var t2 = p.dot.text, a2 = LR.addProjectRefs(t2, add2); if (a2 !== t2) edits.push({ path: p.dot.path, project: p.name, before: t2, after: a2, created: false, deleted: false, notes: ['add reference(s) ' + add2.join(', ')] }); } }
+      var refsShared = finalRefs[p.name].filter(function (r) { return G[r] || already.indexOf(r) >= 0 || known[r]; });
+      if (!refsShared.length || !p.desc.path) return;
+      var before = p.desc.text || '', txt = before || LC.newDescriptor(p.kind === 'application' ? 'application' : 'library'), notes = [];
+      refsShared.forEach(function (r) { var x = LC.addDescriptorRef(txt, r); if (x.error) res.errors.push(p.name + ': ' + x.error); else if (x.changed) { txt = x.text; notes.push('add sharedLibraryReference ' + r); } });
+      if (notes.length || !before) edits.push({ path: p.desc.path, project: p.name, before: before, after: txt, created: !before, deleted: false, notes: notes });
+    });
+    res.converted = group;
+    res.localCopies = {}; Object.keys(localOf).forEach(function (k) { var c = k.split('|')[0]; (res.localCopies[c] = res.localCopies[c] || []).push(k.split('|')[1] + ' -> ' + localOf[k]); });
+    res.hooks = [];
+    res.notes.push('Libraries keep their names and stay separate: ' + group.map(function (L) { return L + ' (schema ' + schemaOf(L) + ')'; }).join(', ') + '.');
+    var nLocal = Object.keys(localOf).length;
+    if (nLocal) res.notes.push(nLocal + ' local subflow cop(ies): ' + Object.keys(res.localCopies).map(function (c) { return c + ' ' + res.localCopies[c].length; }).join(', ') + '. Verified on ACE 13.0.2.0: a shared library cannot use a subflow of another shared library (BIP1360E) and a shared subflow cannot run an application module (BIP4127E); the copies run the owners\' shared modules.');
+    res.manualActions.push('Deploy the shared libraries before the services (deploy order: the libraries that others reference first). Convert every other service with the same strategy so they use the same libraries.');
+    return finish({ addProjects: [], apps: st.projects.filter(function (p) { return p.kind === 'application'; }).map(function (p) { return { name: p.name, uses: finalRefs[p.name].filter(function (r) { return G[r] || already.indexOf(r) >= 0; }) }; }) });
   };
 })(window.ACE);
