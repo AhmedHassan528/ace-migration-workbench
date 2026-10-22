@@ -111,7 +111,7 @@
         c.knownSharedLibraries = UI.$('#lcKnown', el).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
         c.validateAfterConversion = UI.$('#lcVal', el).checked;
         var strat = UI.$$('input[name=lcStrat]', el).filter(function (r) { return r.checked; })[0];
-        c.strategy = strat ? strat.value : 'separate';
+        c.strategy = strat ? strat.value : 'separate'; c.strategyVersion = 2;
         c.sharedLibraryName = UI.$('#lcName', el).value.trim();
         c.schema = UI.$('#lcSchema', el).value.trim();
         S.libraryConversion = c; ACE.settings.save();

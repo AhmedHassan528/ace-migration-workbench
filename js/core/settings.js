@@ -18,6 +18,10 @@
   st.load = function () {
     var saved = null;
     try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { ACE.log.warn('Settings storage not available; using defaults (' + e.message + ')'); }
+    // Settings saved before "separate" became the default carry the old default "refactor" (merge into one
+    // library) without the user having chosen it: move them to the new default.
+    var slc = saved && saved.libraryConversion;
+    if (slc && slc.strategyVersion !== 2) { if (slc.strategy === 'refactor') slc.strategy = 'separate'; slc.strategyVersion = 2; }
     st.current = merge(ACE.util.deepClone(window.ACE_DEFAULT_CONFIG), saved || {});
     // Strict version mode: the versions are fixed by config/versions.js and never taken from saved settings.
     if (window.ACE_VERSIONS) { st.current.sourceVersion = window.ACE_VERSIONS.source; st.current.targetVersion = window.ACE_VERSIONS.target; }
