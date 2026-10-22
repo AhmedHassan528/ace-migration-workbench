@@ -154,9 +154,9 @@ Details, rule sources and evidence: [docs/MIGRATION-12.0.5-TO-13.0.8.md](docs/MI
 ## 7. Tests
 
 Open `tests/index.html`, optionally select the real BAR, and press **Run all tests**.
-- 60 executable tests, using real `javac` bytecode embedded as fixtures. W01–W07, W09, L01–L12, R01–R06 and S01–S02 use synthetic workspace ZIPs; W08, L13, R07 and S03 use real ones (optional, like the real BAR).
+- 61 executable tests, using real `javac` bytecode embedded as fixtures. W01–W07, W09, L01–L12, R01–R06 and S01, S02 and S04 use synthetic workspace ZIPs; W08, L13, R07 and S03 use real ones (optional, like the real BAR).
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with a real BAR and a real workspace ZIP: **60 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
+- Recorded run from `file://` (headless Chrome) with a real BAR and a real workspace ZIP: **61 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
 
 ## 8. Structure
 

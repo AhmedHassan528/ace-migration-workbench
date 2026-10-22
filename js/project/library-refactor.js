@@ -446,6 +446,22 @@
     return set;
   };
 
+  /* A node whose ESQL property (computeExpression, filterExpression, statement) is promoted runs the promoted value;
+   * its own value is never used. Set it to the promoted property's default, so that it resolves too: in a named
+   * schema the Toolkit reports an unresolvable old value ("Unable to locate URN esql://routine/..."). */
+  LR.syncPromotedModules = function (text) {
+    var esc = function (s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }, out = text, count = 0, m;
+    var re = /<attributeLinks promotedAttribute="([^"]+)" overriddenNodes="([^"]+)">\s*<overriddenAttribute href="ComIbm(?:Compute|Filter|Database)\.msgnode#Property\.(computeExpression|filterExpression|statement)"/g;
+    while ((m = re.exec(text))) {
+      var def = (text.match(new RegExp('xmi:id="' + esc(m[1]) + '"[^>]*defaultValueLiteral="([^"]*)"')) || [])[1];
+      if (!def || !/^esql:\/\//.test(def)) continue;
+      m[2].split(/\s+/).forEach(function (id) {
+        out = out.replace(new RegExp('(<nodes [^>]*xmi:id="' + esc(id) + '"[^>]*\\s' + m[3] + '=")([^"]*)(")'), function (a, p, v, s) { if (v !== def) count++; return p + def + s; });
+      });
+    }
+    return { text: out, count: count };
+  };
+
   /* Add <project> references to a .project text (keeps everything else; no duplicates). */
   LR.addProjectRefs = function (text, names) {
     var dp = ACE.bar.parseDotProject(text), add = names.filter(function (n) { return dp.projects.indexOf(n) < 0; });
@@ -533,15 +549,20 @@
       while ((b = br.exec(attrs))) { if (!props[b[2]]) continue; var own2 = modOwner['#' + b[3]]; if (!own2 || !sc[own2]) return true; }
       return false;
     }
-    /* Rewrite a flow/subflow text that belongs to container C (its own file or a local copy). */
-    function processFlow(C, text, selfNs) {
+    function hasJavaCompute(T) { return /ComIbmJavaCompute\.msgnode:FCMComposite_1"/.test(subs[T].text); }
+    /* Rewrite a flow/subflow text that belongs to container C (its own file or a local copy).
+     * inLocal: the text is a local copy in an application. Its nested subflows are copied too (Toolkit 13.0.2.0:
+     * an application subflow with promoted properties that nests shared-library subflows fails validation,
+     * "Property ... promoted from node ... can not be resolved"), except subflows with JavaCompute nodes:
+     * the application cannot load a shared library's Java classes ("Class ... is not accessible"). */
+    function processFlow(C, text, selfNs, inLocal) {
       var map = {}, notes = [];
       var fileNodes = subflowNodes(text);
       var bySub = {}; fileNodes.forEach(function (nd) { if (subs[nd.ns]) (bySub[nd.ns] = bySub[nd.ns] || []).push(nd); });
       Object.keys(bySub).forEach(function (T) {
         var s = subs[T];
         if (s.owner === C) { map[T] = s.newNs; return; }
-        var local = !isApp(C) || bySub[T].some(function (nd) { return hookedFor(T, nd.attrs); });
+        var local = !isApp(C) || bySub[T].some(function (nd) { return hookedFor(T, nd.attrs); }) || (inLocal && !hasJavaCompute(T));
         if (local) map[T] = localize(C, T);
         else { map[T] = s.newNs; needRef(C, s.owner); }
       });
@@ -550,14 +571,14 @@
       var bare = /(\s)(computeExpression|filterExpression|statement)="([A-Za-z_][^"\s.#\/:]*)"/g, b;
       while ((b = bare.exec(text))) { var o2 = modOwner['#' + b[3]]; if (o2) needRef(C, o2); }
       var dv = /defaultValueLiteral="([A-Za-z_][^"\s.#\/:]*)"[^>]*>\s*<eType[^>]*#\/\/EsqlModule"/g, d; while ((d = dv.exec(text))) { var o3 = modOwner['#' + d[1]]; if (o3) needRef(C, o3); }
-      var r1 = LR.rewriteSubflowRefs(text, map, selfNs), r2 = LR.rewriteModuleRefs(r1.text, modMap, esqlProps);
-      return { text: r2.text, notes: r1.notes.concat(r2.count ? [r2.count + ' ESQL module reference(s) schema-qualified'] : []) };
+      var r1 = LR.rewriteSubflowRefs(text, map, selfNs), r2 = LR.rewriteModuleRefs(r1.text, modMap, esqlProps), r3 = LR.syncPromotedModules(r2.text);
+      return { text: r3.text, notes: r1.notes.concat(r2.count ? [r2.count + ' ESQL module reference(s) schema-qualified'] : []).concat(r3.count ? [r3.count + ' node(s) with a promoted ESQL property get the promoted value (the old node value is never used and does not resolve in a named schema)'] : []) };
     }
     function localize(C, T) {
       var key = C + '|' + T; if (localOf[key]) return localOf[key];
       var ns = localNsFor(C, T); localOf[key] = ns;
-      var r = processFlow(C, subs[T].text, ns);
-      created.push({ path: C + '/' + ns, project: C, text: r.text, note: 'local copy of ' + subs[T].owner + '/' + subs[T].rel + (isApp(C) ? ' (receives application ESQL modules - not possible inside a shared library, BIP4127E)' : ' (a shared library cannot use a subflow of another shared library, BIP1360E)') });
+      var r = processFlow(C, subs[T].text, ns, isApp(C));
+      created.push({ path: C + '/' + ns, project: C, text: r.text, note: 'local copy of ' + subs[T].owner + '/' + subs[T].rel + (isApp(C) ? ' (receives application ESQL modules - not possible inside a shared library, BIP4127E - or is nested in such a copy)' : ' (a shared library cannot use a subflow of another shared library, BIP1360E)') });
       return ns;
     }
     /* ESQL text of container C: qualify calls to other libraries' routines; collect constants to copy. */

@@ -69,8 +69,9 @@ For each converted library `L` (name unchanged; R-numbers refer to the runtime t
 3. A subflow of `L` that nests a subflow of another library `M` gets a copy of that subflow at `L/local/M/<name>.subflow` (R8 forbids nesting across shared libraries). `M` itself is unchanged and still shared.
 4. In an application, a subflow that receives an application module (hook, R7) is copied to `<App>/local/<Owner>/`. Un-hooked subflows are used from the shared library (R2, R3).
 5. Calls to routines of another library become schema-qualified (R5). Schema-level `CONSTANT` and `NAMESPACE` declarations used across libraries are copied next to the user (R6).
-6. `LANGUAGE JAVA` routines whose class is in `L`'s Java projects or JARs get `CLASSLOADER "{L}"`. Without it the routine cannot find the class in a shared library (BIP3202E/BIP2943E observed; IBM docs, CREATE PROCEDURE, example 4).
-7. Project references needed at run time are added; a reference cycle between shared libraries blocks the run (RF-CYCLE).
+6. **Toolkit import:** a local copy in an application also copies the subflows it nests, so no promoted-property link points into a shared library (the Toolkit cannot resolve those: "Property ... promoted from node ... can not be resolved"). Subflows with JavaCompute nodes stay shared, because an application cannot load a shared library's Java classes. A node whose ESQL property is promoted gets the promoted value (its old value is never used and does not resolve in a named schema). Verified with `mqsicreatebar` (Toolkit 13.0.2.0): no problems.
+7. `LANGUAGE JAVA` routines whose class is in `L`'s Java projects or JARs get `CLASSLOADER "{L}"`. Without it the routine cannot find the class in a shared library (BIP3202E/BIP2943E observed; IBM docs, CREATE PROCEDURE, example 4).
+8. Project references needed at run time are added; a reference cycle between shared libraries blocks the run (RF-CYCLE).
 
 **Build:** `ibmint package --project L1 --project L2 ...` builds each library as a `.shlibzip`. Java projects a shared library references must also be named (`--project <JavaProject>`), otherwise `ibmint` does not compile them; the conversion report's build commands include them. Deploy the shared libraries with or before the applications.
 

@@ -924,6 +924,24 @@
       a.ok(/--project JLib .*--project JPrj/.test(run.targets[0].state.build.commands[0].command), 'build command names the Java project so ibmint compiles it');
     });
   });
+  test('S04', 'Toolkit import: an application copy also copies the subflows it nests (except JavaCompute ones); promoted nodes get the promoted ESQL value', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC(SEP, async function () {
+      var ws = await sepLoad(Fx.frameworkSpec(function (spec) {
+        var fw = spec[1].files;
+        fw['JSub.subflow'] = Fx.flowXml('JSub.subflow', { nodes: [{ type: 'ComIbmJavaCompute.msgnode', attrs: { javaClass: 'p.Load' } }] });
+        fw['FwSub.subflow'] = Fx.flowXml('FwSub.subflow', { uses: [{ prefix: 'AuditSub.subflow', ns: 'AuditSub.subflow' }, { prefix: 'JSub.subflow', ns: 'JSub.subflow' }], props: [{ name: 'AppHook', def: 'esql://routine/#Fw_Default.Main' }], nodes: [{ type: 'ComIbmCompute.msgnode', attrs: { computeExpression: 'Stale_Old_Name' } }, { type: 'AuditSub.subflow', attrs: { Hook: 'esql://routine/#Fw_AuditHook.Main' } }, { type: 'JSub.subflow', attrs: {} }], links: [{ prop: 'AppHook', node: 1, href: 'ComIbmCompute.msgnode#Property.computeExpression' }] });
+        return spec;
+      }));
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(v.passed, 'validation: ' + v.checks.filter(function (c) { return c.status === 'FAIL'; }).map(function (c) { return c.id + ' ' + c.problems.slice(0, 2).join(' | '); }).join('; '));
+      var loc = cur(ws, 'App/App/local/FwL/FwSub.subflow') || '';
+      a.ok(cur(ws, 'App/App/local/AuditL/AuditSub.subflow') && /"App\/local\/AuditL\/AuditSub\.subflow"/.test(loc) && !/"AuditL\/AuditSub\.subflow"/.test(loc), 'the hooked copy nests its own copy of AuditSub (no promoted-property link into a shared library)');
+      a.ok(/"FwL\/JSub\.subflow"/.test(loc) && !cur(ws, 'App/App/local/FwL/JSub.subflow'), 'JSub (JavaCompute) stays in the shared library: its class is not accessible to the application');
+      a.ok(/computeExpression="esql:\/\/routine\/FwL#Fw_Default\.Main"/.test(loc) && !/Stale_Old_Name/.test(loc), 'promoted Compute node gets the promoted value');
+      a.ok(/computeExpression="esql:\/\/routine\/FwL#Fw_Default\.Main"/.test(cur(ws, 'FwL/FwL/FwSub.subflow')), 'same in the shared library');
+      ACE.workflow.undoLibraryConversion();
+    });
+  });
   test('S03', 'Real workspace ZIP(s): the separate strategy keeps all library names; ContentCreate converts and validates', { category: 'Library conversion (separate)', requires: 'workspace' }, async function (a, env) {
     var files = env.workspaceFiles && env.workspaceFiles.length ? env.workspaceFiles : [env.workspaceFile];
     for (var i = 0; i < files.length; i++) {
