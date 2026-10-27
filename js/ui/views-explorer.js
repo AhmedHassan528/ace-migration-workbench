@@ -1,9 +1,12 @@
-/* View: Project Explorer (IBM ACE Toolkit style) with file preview/editing and ZIP export.
+/* Page 5: Source Code Explorer = source extraction + Project Explorer (IBM ACE Toolkit style) with file preview/editing and ZIP export.
+ * Input: a BAR or a Toolkit workspace ZIP, on this page only.
  * The tree comes from ACE.explorer.build(ws) - nothing is hard-coded. */
 (function (ACE) {
   'use strict';
   var UI = ACE.ui, util = ACE.util, esc = util.esc, EX = ACE.explorer;
   var st = { showHidden: false, copy: 'ws12', expanded: new Set(), sel: null, multi: new Set(), anchor: null, filter: '', dirty: false, pending: null, status: null, model: null, modelKey: null, edText: null };
+
+  var V = {};
 
   /* ---------- icons (inline SVG, no external resources) ---------- */
   function svg(body, title) { return '<svg class="ic" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' + body + '</svg>'; }
@@ -201,14 +204,13 @@
     else go();
   }
 
-  UI.register('explorer', {
+  var X = {
     render: function (s) {
-      var nb = UI.needBar(s); if (nb) return '<h1>Project Explorer</h1>' + nb;
       var ws = s.ws, m = model(ws), q = st.filter.toLowerCase().trim(), out = [], visible = [];
       rows(ws, m.roots, 0, out, q, visible); st.visible = visible;
       var n = selNode(m), root = n ? projectOf(m, n) : null;
-      var h = '<h1>Project Explorer</h1><p class="lead">Toolkit-style view of the reconstructed workspace, built from the BAR: Message Flows, Subflows, ESQLs (by BROKER SCHEMA), Java (by package declaration), Included Libraries and Other Resources. As in the Toolkit, .project/.classpath/.settings and bin are hidden (tick "show hidden"); they are still exported. The grouping is only a view: every file keeps its real path in exports, and a Java project exports with the Eclipse layout (src, bin, Lib).</p>';
-      h += '<div class="row pxbar"><span class="small">Content:</span> <select id="pxCopy"><option value="ws12"' + (st.copy === 'ws12' ? ' selected' : '') + '>ACE 12 working copy</option><option value="ws13"' + (st.copy === 'ws13' ? ' selected' : '') + '>ACE 13 working copy</option><option value="orig"' + (st.copy === 'orig' ? ' selected' : '') + '>Original (read-only)</option></select>' +
+      var h = '<p class="lead">Toolkit-style view of the reconstructed workspace: Message Flows, Subflows, ESQLs (by BROKER SCHEMA), Java (by package declaration), Included Libraries and Other Resources. As in the Toolkit, .project/.classpath/.settings and bin are hidden (tick "show hidden"); they are still exported. The grouping is only a view: every file keeps its real path in exports, and a Java project exports with the Eclipse layout (src, bin, Lib).</p>';
+      h += '<div class="row pxbar"><span class="small">Content:</span> <select id="pxCopy"><option value="ws12"' + (st.copy === 'ws12' ? ' selected' : '') + '>Working copy (saved edits)</option><option value="orig"' + (st.copy === 'orig' ? ' selected' : '') + '>Original (read-only)</option></select>' +
         ' <input type="text" id="pxFilter" placeholder="Filter files…" value="' + esc(st.filter) + '"> <button class="btn small" id="pxExpand">Expand all</button> <button class="btn small" id="pxCollapse">Collapse all</button> <label class="inline small"><input type="checkbox" id="pxHidden"' + (st.showHidden ? ' checked' : '') + '> show hidden (.project, .classpath, .settings, bin)</label></div>';
       h += '<div class="row pxbar"><button class="btn primary" id="pxExpProj"' + (m.roots.length ? '' : ' disabled') + '>Export Project ZIP' + (root ? ' (' + esc(root.label) + ')' : '') + '</button> <button class="btn" id="pxExpFolder"' + (n && n.kind !== 'file' ? '' : ' disabled') + '>Export Selected Folder ZIP</button> <button class="btn" id="pxExpFiles"' + (st.multi.size ? '' : ' disabled') + '>Export Selected Files ZIP' + (st.multi.size ? ' (' + st.multi.size + ')' : '') + '</button></div>';
       h += exportSummary(ws);
@@ -216,7 +218,6 @@
       return h;
     },
     bind: function (el, s) {
-      if (!s.ws || s.ws.fatal) return;
       var ws = s.ws, m = model(ws);
       UI.$('#pxCopy', el).onchange = function (e) {
         var want = e.target.value;
@@ -268,13 +269,69 @@
         var sv = UI.$('#pxSave', el); if (sv) sv.onclick = function () {
           var orig = EX.readText(ws, n, 'orig');
           if (ACE.transforms.recordEdit(ws, st.copy, n.path, orig, ed.value)) ACE.log.ok('Saved ' + n.path + ' to the ' + (st.copy === 'ws12' ? 'ACE 12' : 'ACE 13') + ' working copy');
-          st.dirty = false; st.edText = null; ACE.workflow.analyze(); UI.refresh();
+          st.dirty = false; st.edText = null; V.ctl.analyze(); UI.refresh();
         };
         var rv = UI.$('#pxRevert', el); if (rv) rv.onclick = function () { st.dirty = false; st.edText = null; UI.refresh(); };
-        var un = UI.$('#pxUndo', el); if (un) un.onclick = function () { if (ACE.transforms.undo(ws, st.copy, n.path)) { ACE.workflow.analyze(); UI.refresh(); } };
+        var un = UI.$('#pxUndo', el); if (un) un.onclick = function () { if (ACE.transforms.undo(ws, st.copy, n.path)) { V.ctl.analyze(); UI.refresh(); } };
       }
       var dl = UI.$('#pxDl', el); if (dl && n) dl.onclick = function () { util.download(ed ? ed.value : EX.readBytes(ws, n, st.copy), n.label, 'text/plain'); };
     }
-  });
+  };
+
+  /* ---------- extraction report (how the input maps onto Toolkit projects) ---------- */
+  function fileById(ws, id) { return ws.files.filter(function (f) { return f.id === id; })[0]; }
+  function extractionHtml(ws) {
+      var lay = ACE.project.layout(ws), facts = ws.facts;
+      var h = '<p class="lead">How the BAR contents map onto Toolkit projects, which artifacts are real editable source and which are binary only, and which references resolve.</p>';
+      h += '<h2>Projects</h2><table class="grid"><tr><th>Project</th><th>Type</th><th>From container</th><th class="num">Files</th><th>Source / binary / config</th><th>Descriptor</th><th>Inferred references</th></tr>';
+      var refs = ACE.project.references(ws, facts);
+      lay.projects.forEach(function (p) {
+        var fs = lay.files.filter(function (l) { return l.project === p.name; }).map(function (l) { return fileById(ws, l.fileId); });
+        var c = util.groupBy(fs, function (f) { return f.cls.category; });
+        h += '<tr><td><b>' + esc(p.name) + '</b></td><td>' + esc(p.type) + '</td><td><code class="small">' + esc(p.containerVPath) + '</code></td><td class="num">' + fs.length + '</td><td>' + Object.keys(c).map(function (k) { return UI.tag(k) + ' ' + c[k].length; }).join(' ') + '</td><td>' + (p.descriptor ? 'original (from BAR)' : '<span class="sev-Warning">missing</span>') + '</td><td class="small">' + ((refs[p.name] || []).map(function (r) { return '<b>' + esc(r.project) + '</b> <span class="muted">(' + esc(r.reasons.slice(0, 2).join('; ')) + (r.reasons.length > 2 ? '; …' : '') + ')</span>'; }).join('<br>') || '-') + '</td></tr>';
+      });
+      h += '</table>' + (lay.notes.length ? '<div class="banner warn">' + lay.notes.map(esc).join('<br>') + '</div>' : '');
+      var bin = ws.files.filter(function (f) { return f.cls && (f.cls.category === 'binary' || f.cls.category === 'library'); });
+      h += '<h2>Binary-only and compiled artifacts</h2><p class="muted small">Preserved unchanged in the export. Their editable originals are not in the BAR.</p><table class="grid"><tr><th>File</th><th>Kind</th><th class="num">Size</th></tr>' + bin.map(function (f) { return '<tr><td><code>' + esc(f.vpath) + '</code></td><td>' + UI.tag(f.cls.category, f.cls.label) + '</td><td class="num">' + util.fmtBytes(f.size) + '</td></tr>'; }).join('') + '</table>';
+      if (facts) {
+        h += '<h2>Message flows and subflows (' + facts.flows.length + ')</h2><div class="scroll"><table class="grid"><tr><th>Flow</th><th>Project</th><th class="num">Nodes</th><th>Node types</th><th>ESQL modules</th><th>Subflows</th><th>Java</th></tr>';
+        facts.flows.forEach(function (fl) {
+          var types = util.groupBy(fl.nodes, function (x) { return x.typeLabel; });
+          h += '<tr><td><b>' + esc(fl.name) + '</b>' + (fl.errors.length ? '<br><span class="sev-Error">' + esc(fl.errors.join('; ')) + '</span>' : '') + '</td><td>' + esc(fl.project) + '</td><td class="num">' + fl.nodes.length + '</td><td class="small">' + Object.keys(types).sort().map(function (t) { return esc(t) + (types[t].length > 1 ? ' ×' + types[t].length : ''); }).join(', ') + '</td><td class="small">' + fl.esqlRefs.map(function (r) { return (r.resolvedTo ? '' : '<span class="sev-Error">✗ </span>') + esc(r.module); }).join('<br>') + '</td><td class="small">' + fl.subflowRefs.map(function (s) { return (s.resolvedTo ? '' : '<span class="sev-Error">✗ </span>') + esc(s.path) + (s.resolvedTo ? ' <span class="muted">→ ' + esc(s.resolvedTo.join(', ')) + '</span>' : ''); }).join('<br>') + '</td><td class="small">' + fl.javaClasses.map(function (j) { return (j.resolvedTo ? '' : '<span class="sev-Error">✗ </span>') + esc(j.className) + (j.resolvedTo ? ' <span class="muted">→ ' + esc(j.resolvedTo.join(', ')) + '</span>' : ''); }).join('<br>') + '</td></tr>';
+        });
+        h += '</table></div>';
+        h += '<h2>Key node configuration</h2><div class="scroll"><table class="grid"><tr><th>Flow</th><th>Node</th><th>Type</th><th>Configuration (effective; BAR overrides applied)</th></tr>';
+        facts.nodes.filter(function (n) { return n.kind === 'builtin' && ['soap', 'http', 'mq', 'database', 'java', 'file', 'jms', 'email', 'corba', 'tcpip', 'kafka', 'adapter'].indexOf(n.family) >= 0; }).forEach(function (n) {
+          var kc = ACE.msgflow.keyConfig({ attrs: n.effective });
+          h += '<tr><td>' + esc(n.flow) + '</td><td>' + esc(n.label) + '</td><td>' + esc(n.typeLabel) + '</td><td class="small mono">' + Object.keys(kc).map(function (k) { return esc(k) + '=' + esc(kc[k]) + (n.overridden[k] ? ' <span class="tag metadata">override</span>' : ''); }).join('<br>') + '</td></tr>';
+        });
+        h += '</table></div>';
+        h += '<h2>ESQL (' + facts.esql.length + ' files, ' + facts.stats.esqlModules + ' modules)</h2><div class="scroll"><table class="grid"><tr><th>File</th><th>BROKER SCHEMA</th><th>Modules</th><th>Routines</th><th>Database</th></tr>';
+        facts.esql.forEach(function (e) {
+          h += '<tr><td><code class="small">' + esc(e.project + '/' + e.relPath) + '</code></td><td>' + esc(e.schema || '(default)') + (e.schemaMismatch ? '<br><span class="sev-Warning">folder implies "' + esc(e.expectedSchema || '(default)') + '"</span>' : '') + '</td><td class="small">' + e.modules.map(function (m) { return esc(m.type.toLowerCase() + ' ' + m.name); }).join('<br>') + '</td><td class="small">' + e.routines.map(function (r) { return esc(r.kind.toLowerCase() + ' ' + r.name + (r.language !== 'ESQL' ? ' [' + r.language + (r.external ? ' ' + r.external : '') + ']' : '')); }).join('<br>') + '</td><td class="small">' + (e.passthru.length ? e.passthru.length + ' PASSTHRU' : '') + (e.dbRoutines.length ? ' ' + e.dbRoutines.length + ' stored proc' : '') + '</td></tr>';
+        });
+        h += '</table></div>';
+        h += '<h2>Unresolved references (' + facts.unresolved.length + ')</h2>' + (facts.unresolved.length ? '<table class="grid"><tr><th>Kind</th><th>Reference</th><th>Where</th></tr>' + facts.unresolved.map(function (u) { return '<tr><td>' + esc(u.kind) + '</td><td><code>' + esc(u.ref) + '</code></td><td class="small">' + esc(u.where) + (u.line ? ':' + u.line : '') + '</td></tr>'; }).join('') + '</table>' : '<p class="st-pass">All ESQL module, subflow and JavaCompute class references resolve within the BAR.</p>');
+      }
+      return h;
+  }
+
+  V.input = { title: 'BAR file or source code', hint: 'A BAR, or a Toolkit workspace ZIP. Read in this browser; nothing is uploaded.', accept: '.bar,.zip,.appzip,.libzip', kind: 'any', multiple: false };
+  V.tab = 'explorer';
+  V.onLoaded = function () { st.expanded = new Set(); st.sel = null; st.multi = new Set(); st.anchor = null; st.filter = ''; st.dirty = false; st.edText = null; st.pending = null; st.status = null; st.model = null; st.modelKey = null; };
+  V.render = function (s) {
+    var ws = s.ws;
+    var h = '<h1>Source Code Explorer</h1><p class="lead">Extracts the source from a BAR or a Toolkit workspace ZIP. <b>Explorer</b> shows it the way the Toolkit does, with file preview, editing and ZIP export. <b>Extraction report</b> shows how the content maps onto projects, which artifacts are real editable source and which references resolve.</p>' + UI.inputHtml(V);
+    if (!ws) return h;
+    h += '<div class="row"><button class="btn' + (V.tab === 'explorer' ? ' primary' : '') + '" data-tab="explorer">Explorer</button> <button class="btn' + (V.tab === 'extract' ? ' primary' : '') + '" data-tab="extract">Extraction report</button></div>';
+    return h + (V.tab === 'extract' ? extractionHtml(ws) : X.render(s));
+  };
+  V.bind = function (el, s) {
+    UI.bindInput(el, V);
+    if (!s.ws) return;
+    UI.$$('[data-tab]', el).forEach(function (b) { b.onclick = function () { V.tab = b.getAttribute('data-tab'); UI.refresh(); }; });
+    if (V.tab !== 'extract') X.bind(el, s);
+  };
+  UI.register('explorer', V);
   ACE.ui.explorerState = st; // exposed for tests
 })(window.ACE);

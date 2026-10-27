@@ -1,36 +1,28 @@
 # IBM ACE Migration Workbench
 
-An offline website, written in HTML, CSS and vanilla JavaScript only, that opens IBM App Connect Enterprise **BAR files** and **Toolkit workspace ZIPs**. It:
+An offline website, written in HTML, CSS and vanilla JavaScript only. Open **`index.html`** in Chrome or Edge (double-click it or File > Open). There are no scripts, servers, bridges, helper applications, Java runtimes, external libraries or network access, and nothing is uploaded or stored in the browser.
 
-- extracts their editable artifacts
-- **decompiles application JARs into real `.java` source** with a decompiler written in JavaScript
-- rebuilds a `FrameworkJPrj`-style **Eclipse Java project** (`src/`, `bin/`, `Lib/`, `.project`, `.classpath`, `.settings`)
-- analyses **Java 8 → 17** and **ACE 12.0.5 → 13.0.8** compatibility (strict version mode, see `config/versions.js`), with every finding classified COMPATIBLE / DEPRECATED / REMOVED / UNSUPPORTED / BEHAVIOR_CHANGED / UNKNOWN / MANUAL_REVIEW
-- exports separate **ACE 12** and **ACE 13** ZIP packages
+It has **five independent pages**. Each page has its own file picker and its own state: a file chosen on one page is never seen by another page, and a choice made on one page never changes another.
 
-There are no scripts, servers, bridges, helper applications, Java runtimes, external libraries or network access.
+| # | Page | Input | Result |
+|---|---|---|---|
+| 1 | **BAR Export** | a BAR file | Toolkit source projects for ACE 12 (ZIP), with the application JARs decoded (decompiled) to real `.java` source |
+| 2 | **ACE 13 Migration** | source code (a Toolkit workspace ZIP or folder; not a BAR, not a JAR) | classified ACE 12.0.5 → 13.0.8 and Java 8 → 17 findings, reviewed fixes, an ACE 13 project ZIP |
+| 3 | **Static to Shared Libraries** | source code with its libraries (a workspace ZIP, several ZIPs, or a folder; not a BAR) | static libraries converted to shared libraries, validation, report, project ZIP |
+| 4 | **BAR vs Source** | a BAR and the source code (ZIP or folder) | which files differ, are missing or are extra, with a side-by-side view |
+| 5 | **Source Explorer** | a BAR or a workspace ZIP | the extraction report and a Toolkit-style explorer with file preview, editing and ZIP export |
 
-## 1. Use
+The browser must support `DecompressionStream("deflate-raw")`: Chrome/Edge 103+, Firefox 113+ or Safari 16.4+. The log at the bottom shows if it does not.
 
-1. Open **`index.html`** in Chrome or Edge, by double-clicking it or with File > Open.
-2. Click **Open BAR or workspace ZIP…**. A BAR is unpacked into projects; a ZIP whose folders contain `.project` files (an exported Toolkit workspace) is opened in **workspace mode**, using the original projects, `.project`, `.classpath` and `.settings`. The file is read in the browser and is never uploaded.
-3. Follow the sections in the sidebar:
-   1. Dashboard
-   2. BAR Inspector
-   3. Source Extraction
-   4. **Java Decompiler**
-   5. **Project Explorer**
-   6. ACE 12 Export
-   7. ACE 13 Migration
-   8. Pre-Migration Checks
-   9. Reports
-   10. Settings
+Each page checks what it was given: the migration and library pages refuse a BAR, BAR Export refuses source code, and no page accepts a JAR.
 
-The browser must support `DecompressionStream("deflate-raw")`: Chrome/Edge 103+, Firefox 113+ or Safari 16.4+. The Dashboard shows whether it does.
+## 1. BAR Export
 
-## 2. Java source recovery
+Opens a BAR, verifies every entry (CRC-32), and exports it as Toolkit projects for the **ACE 12.0.5 Toolkit**: the original source byte-for-byte, the original descriptors, generated (and labelled) `.project` files, BAR metadata, `MANIFEST.json` with the provenance and SHA-256 of every file, reports and import instructions, and one Eclipse Java project per decoded JAR.
 
-For every JAR in the BAR, the Java Decompiler view reports each stage separately. Extracting a JAR never counts as recovering its source.
+### Java decoding
+
+For every JAR in the BAR, the page reports each stage separately. Extracting a JAR never counts as recovering its source.
 
 | Stage | Meaning |
 |---|---|
@@ -40,149 +32,109 @@ For every JAR in the BAR, the Java Decompiler view reports each stage separately
 | Java source generated | `.java` files produced: **complete**, **partial** or **failed** per class |
 | Source exported | the project ZIP was downloaded |
 
-**The decompiler** (`js/decompiler/`) is a Java bytecode decompiler written for this project in vanilla JavaScript. It is **not Fernflower**: a browser cannot execute Fernflower's JAR, and Fernflower has no JavaScript port. It rebuilds:
+**The decompiler** (`js/decompiler/`) is a Java bytecode decompiler written for this project in vanilla JavaScript. It is **not Fernflower**: a browser cannot execute Fernflower's JAR. It rebuilds:
 - **Statements and declarations:** expressions, local variables (names from debug info when present, inferred otherwise), generics from signatures, string concatenation, array initialisers, `x++`, and `static`/field initialisers.
 - **Control flow:** `if`/`else`, `while`/`do`/`for`, labelled `break`/`continue`, `switch` (including string switches) and `&&`/`||`/`?:`.
 - **Exceptions and locking:** `try`/`catch` (multi-catch), `finally` and `synchronized`.
 
-**Honest failure.** When a method cannot be decompiled with certainty, its file is marked **partial**. That method gets:
-- a comment stating the reason,
-- the full bytecode listing,
-- a body that throws `UnsupportedOperationException`.
+**Honest failure.** When a method cannot be decompiled with certainty, its file is marked **partial**. That method gets a comment stating the reason, the full bytecode listing, and a body that throws `UnsupportedOperationException`. Partial files are never counted as recovered. Known unsupported constructs: lambdas and method references (`invokedynamic`), non-static inner and anonymous classes, pre-Java 6 `jsr`/`ret` subroutines, unusual `finally` shapes, and obfuscated names that are Java keywords.
 
-Partial files are never counted as recovered. Known unsupported constructs are:
-- lambdas and method references (`invokedynamic`)
-- non-static inner and anonymous classes
-- pre-Java 6 `jsr`/`ret` subroutines
-- unusual `finally` shapes
-- obfuscated names that are Java keywords
+**Measured quality:** a real application JAR from a production BAR (not published) decompiles 3/3 classes and 10/10 methods completely; the output compiles with javac and behaves identically to the original bytecode on the tested inputs. The method is in [docs/DECOMPILER-VALIDATION.md](docs/DECOMPILER-VALIDATION.md) (not published).
 
-**Measured quality.**
-- **A real application JAR from a production BAR** (not published): 3/3 classes and 10/10 methods complete. The output compiles with javac and behaves identically to the original bytecode on the tested inputs.
-- **Test corpus:** compiled with and without debug info, decompiled, recompiled and run. 0 compile errors, identical program output.
+**Driver JARs** are detected from content (the `java.sql.Driver` service registration, driver packages, implementations, manifests; file names are weak evidence). They are excluded from decompilation by default and kept in `Lib/` as dependencies. Every JAR has Include/Exclude/Reset controls (kept on this page only), and the excluded-JAR report can be downloaded.
 
-**Driver JARs** are detected from content: the `java.sql.Driver` service registration, driver packages, `java.sql.Driver` implementations, manifests, and file names as weak evidence. They are excluded from decompilation by default and kept in `Lib/` as dependencies. Every JAR has Include/Exclude/Reset controls, and the excluded-JAR report lists each skipped JAR, why, and where it is preserved.
+**Existing source.** If you have a JAR's original `.java` files (for example from source control), import them per JAR. They are matched to classes by package path and labelled *imported*, not decompiled.
 
-**Existing source.** If you have a JAR's original `.java` files (e.g. from source control), import them per JAR. They are matched to classes by package path and labelled *imported*, not decompiled.
-
-## 3. Generated Eclipse Java project
+### Generated Eclipse Java project
 
 ```
 FrameworkJPrj/
 ├── .project            Java nature (+ ACE JavaCompute nature when a class extends MbJavaComputeNode)
 ├── .classpath          src, bin, JRE from the class-file version, Lib/ dependencies, ACE API (JCN_HOME) when referenced
-├── .settings/org.eclipse.jdt.core.prefs   compiler level from the class-file version (17 in the ACE 13 package)
+├── .settings/org.eclipse.jdt.core.prefs   compiler level from the class-file version
 ├── src/                decompiled or imported .java files at their package paths
 ├── bin/                the ORIGINAL .class files from the JAR, byte-identical
 ├── Lib/                dependency JARs (e.g. jconn2.jar) + the original application JAR (not on the build path)
 └── PROJECT-RECOVERY-NOTES.txt   stages, per-class status, and why every generated file exists
 ```
 
-A `.class` file is never renamed to `.java`, and bytecode never ends up in a source file. The project name can be changed in the Java Decompiler view.
+A `.class` file is never renamed to `.java`, and bytecode never ends up in a source file.
 
-## 4. Project Explorer and ZIP export
+## 2. ACE 13 Migration
 
-The Project Explorer shows the reconstructed workspace the way the IBM ACE Toolkit does. The tree is built from the BAR and the recovered Java projects, never hard-coded:
+Takes **source code** and checks it for ACE 12.0.5 → 13.0.8 (strict mode, `config/versions.js`) and Java 8 → 17.
 
-```
-FrameworkLIB
-├── Subflows                 *.subflow
-├── ESQLs                    *.esql, grouped by their BROKER SCHEMA declaration
-├── Java
-│   └── FrameworkJPrj        decompiled/imported Java project of a JAR deployed in this library
-│       ├── (default package)          classes whose source has no package declaration
-│       └── com.example.security       grouped by the actual "package" declaration
-├── Included Libraries       project references (double-click / context menu to open)
-└── Other Resources
-    ├── FrameworkJPrj        Lib/, bin/, .classpath, .project, .settings of the Java project
-    └── jconn2.jar ...       the library's own JARs and other files
-```
+- **Java 8 → 17:** rules over bytecode of the JARs in the projects (exact references) and over Java source (line numbers). Each finding has a basis: **verified** (observed on IBM Semeru 17 / IBM Java 8, see [docs/VERIFIED-FACTS.md](docs/VERIFIED-FACTS.md)), **documented** (OpenJDK JEP or Java SE documentation) or **heuristic**.
+- **ACE 12 → 13:** a rule engine over flows, nodes, ESQL, policies, data sources, endpoints and JARs. IBM-documented rules cite their URL; the IBM pages are not available offline, so they show as **UNVERIFIED offline**.
+- **Classification:** every finding gets one class (COMPATIBLE, DEPRECATED, REMOVED, UNSUPPORTED, BEHAVIOR_CHANGED, UNKNOWN or MANUAL_REVIEW) with location(s), risk, confidence, recommended action and documentation URL(s). Details, rule sources and evidence: [docs/MIGRATION-12.0.5-TO-13.0.8.md](docs/MIGRATION-12.0.5-TO-13.0.8.md).
+- **Dependencies:** project references from the original `.project` files (including missing projects), `.classpath` entries, product JARs packaged in projects with their manifest version, missing manifest `Class-Path` JARs, duplicate JARs.
+- **Scans:** build files, scripts, wizard/pattern metadata, templates and runtime configuration. Scripts are read as data and never run.
+- **Concurrency and lifecycle (always MANUAL_REVIEW):** mutable static fields, explicit threads and locks, `MbGlobalMap` read-then-write, resources closed outside `finally`; ESQL `SHARED` variables modified outside `BEGIN ATOMIC`.
+- **Fixes:** only verified, deterministic fixes are suggested, each with a diff and an **Accept and replace…** button. For `BASE64Encoder` you choose between an exact equivalent that keeps the old line breaks (recommended) and the single-line `java.util.Base64` encoder; accepting one withdraws the other. The original stays untouched, a copy is exported under `_original-before-changes/`, and Undo restores it.
+- **Export:** the ACE 13 project ZIP (Java 17 compliance, accepted fixes, `_original-before-changes/`, migration report, change log).
+- **What is not done:** compilation and runtime testing. A browser-only tool has no Java compiler; static analysis is labelled as such and is not proof of compatibility.
 
-Applications also get Message Flows, Maps, Schema Definitions and Interfaces groups when they have such files. Java projects also appear as top-level projects (`src`, `bin`, `Lib`). BAR metadata is shown separately and is never part of a project.
+## 3. Static-to-Shared Library Conversion
 
-**Tree controls**
-- **Navigate:** expand/collapse (arrow, double-click, Expand/Collapse all) and filter by name or path.
-- **Select:** click; Ctrl+click toggles a file and Shift+click selects a range.
-- **Context menu:** Open, Download file, Export as ZIP, Copy export path, Expand/Collapse, and Go to library.
+Converts static libraries into ACE shared libraries (ACE 12 and/or ACE 13 package), so a framework change is deployed once instead of rebuilding every service. It follows the real ACE semantics, verified with the Toolkit classes, `ibmint` and a runtime: the `sharedLibraryNature`, a `<sharedLibraryReference>` in every consuming descriptor, a separate `.shlibzip`, and the content and reference rules.
 
-**Files**
-- **Details:** export path, origin (original / decompiled / generated), location in the BAR, SHA-256, package or schema, and decompilation status.
-- **Editing:** Java, ESQL, XML and properties files are edited in the ACE 12 or ACE 13 working copy, with an unsaved-change indicator, Save (Ctrl+S), Discard and Undo. Saved edits go into every export; the BAR is never modified.
-- **Read-only:** `.class` files get a bytecode preview and `.jar` files a classification and package list. They are never shown as Java source.
+- **Input:** the workspace ZIP holding the applications and their libraries. If the libraries are in another ZIP, choose both ZIPs (or a folder): they are combined into one workspace; a file present twice is refused.
+- **Strategy:** by default every library **keeps its name** and becomes its own shared library; only what the runtime requires changes (default-schema ESQL/subflows move into a schema named after the library, subflows nested across libraries, application-hooked subflows and subflows that write the message while the application validates (a shared library has no message model for the application, BIP5058E) are copied locally with the subflows they nest, cross-library calls are schema-qualified, `LANGUAGE JAVA` routines get `CLASSLOADER "{Library}"`). The **merge** strategy combines interdependent libraries into one shared library; **in-place** changes only `.project` natures and descriptors.
+- It preserves the originals, can be undone, is repeatable, validates the result and writes a conversion report with `ibmint` build commands. Libraries that IBM does not allow to be shared (for example ESQL in the default schema) are reported with evidence, never forced.
+- **Evidence:** [docs/LIBRARY-CONVERSION.md](docs/LIBRARY-CONVERSION.md).
 
-**Exports.** The logical grouping never changes paths: every file is written at its real path.
-- **Export Project ZIP:** the complete project of the current selection (e.g. `FrameworkJPrj.zip` with `FrameworkJPrj/src`, `bin`, `Lib`, `.project`, `.classpath`, `.settings`).
-- **Export Selected Folder ZIP:** everything below the selected folder, group or package.
-- **Export Selected Files ZIP:** the Ctrl/Shift-selected files.
+## 4. BAR vs Source Comparison
 
-Before downloading, the workbench shows the ZIP name, file count, total uncompressed size and which working copy is used. It then builds the ZIP and **re-reads it**: every entry must be present once, CRC-correct and byte-identical to its source. Only then does it download and report success. Any failure is shown with the real error and nothing is downloaded.
+Compares the applications of a BAR with the source code, which is the master. Two inputs: a BAR, and the source as a Toolkit workspace ZIP or a folder picked in the file explorer.
 
-## 5. Packages
+- **Matching:** applications are matched by name (the `.project` name against `<name>.appzip`; a case-only difference is matched and says so). Library, shared-library and Java projects, and the `.libzip` / `.shlibzip` archives, are ignored. Unmatched applications are listed, not compared.
+- **Scope:** only ESQL, WSDL, XSD, message flows and subflows are scanned. Java and JAR files are never read or decompiled and are not opened. Extra framework ESQL files inside a BAR application are ignored (same file name as an ESQL file of a source library, a framework library folder, or your own name patterns).
+- **Classification:** *missing in BAR* (a source file that is not in the BAR) and *modified WSDL/XSD* are **critical**. Modified ESQL, message flow or subflow is a **difference**. *Extra in BAR* (a BAR file with no source) is a **non-critical warning**. A source flow for which the BAR only has a compiled `.cmf` is *not comparable*. Line endings and trailing blanks are ignored by default (option).
+- **Result:** a summary, a table per application, and a file table (application, file, type, source status, BAR status, status, severity, differences) with filters, paging, CSV and JSON export. Every file with differences has a button that opens a side-by-side window: changed lines and the changed characters are highlighted, with previous/next change and a context setting.
+- **Speed:** only the central directories are read up front; an application archive is extracted only when a source application of the same name exists; entries with equal size and CRC-32 are identical without being extracted.
 
-- **ACE 12 export:** Toolkit projects with the original files byte-for-byte, generated (and labelled) application/library `.project` files, and the Eclipse Java projects. It also has BAR metadata, `MANIFEST.json` with the provenance and SHA-256 of every file, reports and import instructions.
-- **ACE 13 export:** the same, plus Java 17 compliance, reviewed fixes (diff, confirm, undo), `_original-before-changes/`, migration report, checklist and change log. The ACE 12 output is not modified.
+## 5. Source Explorer
 
-## 6. Migration analysis
+Extracts the source from a BAR or a Toolkit workspace ZIP and shows it two ways.
 
-- **Java 8 → 17:** rules over bytecode (exact references) and source (line numbers). Each finding has a basis:
-  - **verified:** behaviour observed on IBM Semeru 17 / IBM Java 8 during development; see [docs/VERIFIED-FACTS.md](docs/VERIFIED-FACTS.md)
-  - **documented:** backed by an OpenJDK JEP or Java SE documentation
-  - **heuristic:** a risk pattern for human review
-- **ACE 12 → 13:** a rule engine over flows, nodes, `broker.xml` overrides, ESQL, policies, data sources, endpoints and JARs.
-  - IBM-documented rules cite their URL. They are checked by keyword against IBM pages you save locally and import in Settings; without imports they show as **UNVERIFIED offline**.
-  - Rules can be exported and imported as JSON (`rules/sample-custom-rules.json`).
-- **What is not done:** **compilation and runtime testing.** A browser-only tool has no Java compiler. Static analysis is labelled as such everywhere and is not proof of compatibility.
+- **Extraction report:** how the content maps onto Toolkit projects, which artifacts are real editable source and which are binary only, message flows and their nodes, ESQL files and modules, and unresolved references.
+- **Explorer:** the Toolkit-style tree, built from the input and never hard-coded: Message Flows, Subflows, ESQLs (by BROKER SCHEMA), Java (by package declaration), Included Libraries and Other Resources. `.project`/`.classpath`/`.settings` and `bin` are hidden unless ticked, but they are still exported. The grouping is only a view: every file keeps its real path.
+  - **Navigate and select:** expand/collapse, filter by name or path, click, Ctrl+click and Shift+click, context menu (Open, Download file, Export as ZIP, Copy export path, Go to library).
+  - **Files:** details (origin, location, SHA-256, package or schema, decompilation status), editing of Java, ESQL, XML and properties files in a working copy (Save, Discard, Undo; the input is never modified), and read-only previews for `.class` and `.jar` files.
+  - **Exports:** Project ZIP, Selected Folder ZIP, Selected Files ZIP. The ZIP is built and **re-read**: every entry must be present once, CRC-correct and byte-identical to its source before the download starts.
 
-## 6b. ACE 12.0.5 → 13.0.8 (strict mode)
+## 6. Tests
 
-Details, rule sources and evidence: [docs/MIGRATION-12.0.5-TO-13.0.8.md](docs/MIGRATION-12.0.5-TO-13.0.8.md).
-
-- **Versions are fixed:** source 12.0.5, target 13.0.8 (`config/versions.js`). Settings shows them read-only, and older saved settings cannot override them.
-- **Classification:** every finding from every analyser gets one class, plus location(s), risk, confidence, recommended action, documentation URL(s) and, when a reviewed fix exists, its diff.
-- **Dependencies:** project references from the original `.project` files, including missing projects; `.classpath` entries (JRE container, classpath variables such as `JCN_HOME`, missing libraries); product JARs packaged in projects, with their manifest version and missing manifest `Class-Path` JARs; duplicate JARs; whether anything in the input actually uses each JAR.
-- **Scans:** build files, scripts, wizard/pattern metadata, templates, extension points and runtime configuration. Scripts are read as data and never run. Categories that are absent are reported as absent.
-- **Concurrency and lifecycle (always MANUAL_REVIEW):**
-  - Java: mutable static fields, non-thread-safe static objects, mutable fields in JavaCompute nodes, explicit threads and locks, `MbGlobalMap` read-then-write, resources closed outside `finally`
-  - ESQL: `SHARED` variables modified outside `BEGIN ATOMIC`, plus the flow's `additionalInstances` setting
-- **Reports:** `MIGRATION-REPORT.json` and `MIGRATION-REPORT.md` (human-readable) include **unresolved risks**, **unverified assumptions** and a validation section that lists what was and was not performed.
-- **Fixes:** only verified, deterministic fixes are suggested, each with a diff and an **Accept and replace…** button (in the findings table and under "All suggested solutions"). For `BASE64Encoder` you choose between two options: an exact equivalent that keeps the old line breaks (recommended), or the single-line `java.util.Base64` encoder. Accepting one withdraws the other. The original stays untouched, a copy is exported under `_original-before-changes/`, and Undo restores it.
-
-## 6c. Static-to-shared library conversion (optional)
-
-**8. Shared Libraries** converts static libraries into ACE shared libraries for ACE 12 and/or 13, so a framework change is deployed once instead of rebuilding every service. It is off by default; when off, nothing changes. It follows the real ACE semantics, verified with the Toolkit classes, `ibmint` and a runtime: the `sharedLibraryNature`, a `<sharedLibraryReference>` in every consuming descriptor, a separate `.shlibzip`, and the content and reference rules. By default (**separate** strategy) every library **keeps its name** and becomes its own shared library; only what the runtime requires changes: default-schema ESQL/subflows move into a schema named after the library, subflows nested across libraries and application-hooked subflows are copied locally, cross-library calls are schema-qualified, and `LANGUAGE JAVA` routines get `CLASSLOADER "{Library}"` - every rule verified on the ACE runtime. The **merge** strategy combines interdependent libraries into one shared library; the **in-place** strategy changes only `.project` natures and descriptors. It preserves the originals, can be undone, is repeatable, validates the result and writes a conversion report with `ibmint` build commands. Libraries that IBM does not allow to be shared (e.g. ESQL in the default schema) are reported with evidence, never forced. Details and evidence: [docs/LIBRARY-CONVERSION.md](docs/LIBRARY-CONVERSION.md).
-
-## 7. Tests
-
-Open `tests/index.html`, optionally select the real BAR, and press **Run all tests**.
-- 61 executable tests, using real `javac` bytecode embedded as fixtures. W01–W07, W09, L01–L12, R01–R06 and S01, S02 and S04 use synthetic workspace ZIPs; W08, L13, R07 and S03 use real ones (optional, like the real BAR).
+Open `tests/index.html`, optionally select the real BAR and source ZIP(s), and press **Run all tests**.
+- 77 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C07) and the page independence (P01–P06). Some use a real BAR or real source ZIPs if you select them; those tests report NOT RUN without them.
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with a real BAR and a real workspace ZIP: **61 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
+- Recorded run from `file://` (headless Chrome) with a real BAR and real source ZIPs: **77 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
 
-## 8. Structure
+## 7. Structure
 
 ```
 index.html styles.css app.js
-js/core/         util, settings (localStorage + IndexedDB)
+js/core/         util, settings (defaults only; nothing is stored in the browser)
 js/archive/      crc32, zip-reader, zip-writer, classify, bar-engine
 js/java/         classfile (full class-file parser), jar-analyzer (inspection + driver detection)
 js/decompiler/   bytecode, types, ir, translate, structure, passes, syntax-check, decompiler
-js/analysis/     msgflow-parser, esql-parser, java17-analyzer, ace-rule-engine, premigration, migration-scanner
-js/project/      eclipse-project, explorer-model, project-builder, transforms, diff, library-conversion
-js/report/       reports (JSON + standalone HTML)
-js/workflow.js   pipeline shared by UI and tests
-js/ui/           views
+js/analysis/     msgflow-parser, esql-parser, java17-analyzer, ace-rule-engine, migration-scanner
+js/project/      eclipse-project, explorer-model, project-builder, transforms, diff, library-conversion, library-refactor
+js/compare/      bar-source-compare
+js/report/       reports (JSON + standalone HTML, included in the exported packages)
+js/workflow.js   one controller per page (ACE.workflow.create): own input, own state, own options
+js/ui/           ui-core (page frame, input handling), export-card, and one file per page:
+                 views-barexport, views-migrate, views-libconv, views-compare, views-explorer
 config/          default-config, versions (fixed 12.0.5 -> 13.0.8 + IBM facts), driver-signatures
 rules/ tests/ docs/
 ```
 
-## 9. Limitations
+## 8. Limitations
 
-- **Decompiled ≠ original.** Comments and formatting are lost, local names come from debug info or are generated, and some constructs are re-expressed equivalently (e.g. a `continue outer` folded into a loop condition). Review before use.
-- **Unsupported Java constructs** (see section 2) produce *partial* files with the reason and bytecode, never invented code.
+- **Decompiled ≠ original.** Comments and formatting are lost, local names come from debug info or are generated, and some constructs are re-expressed equivalently. Review before use. Unsupported constructs produce *partial* files with the reason and bytecode, never invented code.
 - **No compilation in the browser.** Compile and test the exported projects in the IBM ACE Toolkit.
-- **Generated metadata.** `.project`/`.classpath` follow standard Eclipse/ACE Toolkit conventions. Import into the ACE 12.0.5 and 13.0.8 Toolkits has **not** been validated by this tool. In workspace mode no metadata is generated.
-- **JARs not in the BAR.** Dependency JARs that were never deployed in the BAR (e.g. `ConfigManagerProxy.jar`, `IntegrationAPI.jar` in a developer workspace) cannot be recovered; the ACE API is referenced through `JCN_HOME`.
+- **Generated metadata.** `.project`/`.classpath` follow standard Eclipse/ACE Toolkit conventions. Import into the ACE 12.0.5 and 13.0.8 Toolkits has **not** been validated by this tool (the library conversion output was imported with the Toolkit 13.0.2.0 build tool). For source-code input no metadata is generated: the original is used.
+- **JARs not in the BAR.** Dependency JARs that were never deployed in the BAR cannot be recovered; the ACE API is referenced through `JCN_HOME`.
 - **BAR content limits.** BARs can contain binary-only artifacts (`.cmf`, compiled schemas). These are preserved and flagged, not reconstructed.
 - **Runtime facts.** The verified facts came from ACE **13.0.2.0**'s Java 17, not 13.0.8. Neither ACE 12.0.5 nor 13.0.8 is installed on the development machine.
 - **Concurrency analysis is lexical.** It finds patterns; it does not prove a race or its absence.
-- **Browsers.** Tested in Chrome 155 (headless, `file://`) and a Chromium-based browser; Firefox/Safari were not tested.

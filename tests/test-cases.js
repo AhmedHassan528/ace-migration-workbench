@@ -290,12 +290,11 @@
     a.ok(/compliance=17/.test(util.decodeText(z['legacy/.settings/org.eclipse.jdt.core.prefs']).text), 'Java 17 compliance for ACE 13');
     a.ok(/JavaSE-17/.test(util.decodeText(z['legacy/.classpath']).text), 'JavaSE-17 JRE container');
     a.ok(z['_original-before-changes/legacy/src/com/example/Legacy.java'], 'unchanged copy preserved');
-    ['MIGRATION-REPORT.json', 'MIGRATION-CHECKLIST.txt', 'CHANGE-LOG.txt', 'COMPATIBILITY-REPORT.json', 'IMPORT-INSTRUCTIONS.txt'].forEach(function (n) { a.ok(z['_workbench/' + n], n); });
+    ['MIGRATION-REPORT.json', 'CHANGE-LOG.txt', 'COMPATIBILITY-REPORT.json', 'IMPORT-INSTRUCTIONS.txt'].forEach(function (n) { a.ok(z['_workbench/' + n], n); });
     a.ok(/APPLIED/.test(util.decodeText(z['_workbench/CHANGE-LOG.txt']).text), 'change log lists the applied fix');
     var rep = JSON.parse(util.decodeText(z['_workbench/MIGRATION-REPORT.json']).text);
     a.ok(/cannot prove runtime compatibility/.test(rep.disclaimer), 'report states static analysis limits');
     a.ok(rep.findings.some(function (f) { return f.ruleId === 'ACE13-WSSEC-JAVA17'; }) && rep.findings.some(function (f) { return f.ruleId === 'ACE13-SSL-IBMNAMES'; }), 'ACE 13 rule findings present');
-    a.ok(rep.checklist.some(function (c) { return /compile for Java 17/.test(c.title) && c.status === 'toolkit'; }), 'Java 17 compilation honestly marked as not performed');
   });
   test('T23', 'Eclipse project generator: src / bin / Lib layout and evidence-based metadata', { category: 'Project generation' }, async function (a) {
     var ws = await load(await Fx.syntheticBar(), 'Demo.bar');
@@ -312,15 +311,11 @@
     a.ok(r.plan.reasons.length === 3, 'each generated file has a recorded reason');
   });
 
-  test('T20', 'Documentation import changes rule verification state', { category: 'Rules' }, async function (a) {
-    var ws = await load(await Fx.syntheticBar(), 'Demo.bar');
+  test('T20', 'Rules that IBM documents are marked UNVERIFIED offline (no IBM documentation is available)', { category: 'Rules' }, async function (a) {
     var r = window.ACE_ACE_RULES.rules.filter(function (x) { return x.id === 'ACE13-ODBC'; })[0];
     a.eq(ACE.aceRules.docVerification(r, []).state, 'unverified', 'no docs -> unverified');
-    a.eq(ACE.aceRules.docVerification(r, [{ name: 'premig.html', text: 'If you use databases, create ODBC definitions for the databases' }]).state, 'matched', 'keyword found -> matched');
-    a.eq(ACE.aceRules.docVerification(r, [{ name: 'other.html', text: 'unrelated' }]).state, 'not-found', 'keyword missing -> not-found');
-    var bad = false; try { ACE.ui.validateRuleSet({ id: 'x', rules: [{ id: 'R', severity: 'Fatal', title: 't', match: {} }] }); } catch (e) { bad = true; } a.ok(bad, 'invalid user rule rejected');
-    var rs = ACE.ui.validateRuleSet({ id: 'custom', rules: [{ id: 'C1', severity: 'Warning', title: 'Uses TESTDSN', match: { attrMatches: { dataSource: '^TESTDSN$' } } }] });
-    a.eq(ACE.aceRules.evaluate(ws.facts, rs, ws, []).length, 1, 'user rule evaluated'); a.eq(rs.rules[0].status, 'heuristic', 'user rule defaults to heuristic');
+    var ws = await load(await Fx.syntheticBar(), 'Demo.bar');
+    a.ok(ws.aceFindings.length > 0 && ws.aceFindings.every(function (f) { return !f.docVerification || ['unverified', 'not-applicable', 'probe', 'heuristic'].indexOf(f.docVerification.state) >= 0; }), 'no finding claims to be matched against IBM documentation');
   });
 
   /* ---------- 10. offline & large files ---------- */
@@ -449,18 +444,18 @@
     var ex = ACE.explorer.build(ws), lib = ex.roots.filter(function (r) { return r.label === 'LibB'; })[0];
     a.ok(lib && lib.children.some(function (g) { return g.label === 'Java' && g.children.some(function (j) { return j.label === 'JavaP' && j.children.some(function (pk) { return pk.label === 'p'; }); }); }), 'Explorer shows the referenced Java project under LibB > Java > JavaP > p');
   });
-  test('W02', 'Strict version mode: source 12.0.5 / target 13.0.8 cannot be overridden by saved settings', { category: 'ACE 12.0.5 -> 13.0.8' }, async function (a) {
+  test('W02', 'Strict version mode: source 12.0.5 / target 13.0.8 are fixed and nothing is stored in the browser', { category: 'ACE 12.0.5 -> 13.0.8' }, async function (a) {
     a.eq(window.ACE_VERSIONS.source, '12.0.5', 'configured source'); a.eq(window.ACE_VERSIONS.target, '13.0.8', 'configured target');
     a.ok(Object.isFrozen(window.ACE_VERSIONS), 'version configuration is frozen');
     var keep = ACE.settings.current, orig = Storage.prototype.getItem;
     Storage.prototype.getItem = function () { return JSON.stringify({ sourceVersion: '12.0.6', targetVersion: '13.0.2' }); };
-    try { var s = ACE.settings.load(); a.eq(s.sourceVersion, '12.0.5', 'saved 12.0.6 ignored'); a.eq(s.targetVersion, '13.0.8', 'saved 13.0.2 ignored'); }
+    try { var s = ACE.settings.load(); a.eq(s.sourceVersion, '12.0.5', 'a stored 12.0.6 is ignored'); a.eq(s.targetVersion, '13.0.8', 'a stored 13.0.2 is ignored'); }
     finally { Storage.prototype.getItem = orig; ACE.settings.current = keep; }
     var ws = await load(await Fx.syntheticWorkspace(), 'ws.zip');
     a.ok(/12\.0\.5/.test(ws.migration.versions.statement), 'version evidence: ' + ws.migration.versions.statement);
     var r = ACE.reports.migration(ws);
     a.eq(r.versions.source + '>' + r.versions.target, '12.0.5>13.0.8', 'report header carries the strict versions');
-    a.ok(!/12\.0\.6/.test(ACE.reports.migrationText(ws) + ACE.reports.checklistText(ws) + ACE.project.instructions(ws, 'ace13', ACE.project.layout(ws), {}, [], [])), 'no 12.0.6 left in reports or instructions');
+    a.ok(!/12\.0\.6/.test(ACE.reports.migrationText(ws) + ACE.project.instructions(ws, 'ace13', ACE.project.layout(ws), {}, [], [])), 'no 12.0.6 left in reports or instructions');
   });
   test('W03', 'Dependency and Java runtime analysis (.classpath, product JAR versions, manifest Class-Path, missing projects)', { category: 'ACE 12.0.5 -> 13.0.8' }, async function (a) {
     var ws = await load(await Fx.syntheticWorkspace(), 'ws.zip');
@@ -940,6 +935,85 @@
       a.ok(/computeExpression="esql:\/\/routine\/FwL#Fw_Default\.Main"/.test(loc) && !/Stale_Old_Name/.test(loc), 'promoted Compute node gets the promoted value');
       a.ok(/computeExpression="esql:\/\/routine\/FwL#Fw_Default\.Main"/.test(cur(ws, 'FwL/FwL/FwSub.subflow')), 'same in the shared library');
       ACE.workflow.undoLibraryConversion();
+    });
+  });
+  /* R11 (verified on ACE 13.0.2.0): a node that writes the message, with validation on, cannot find the application's message model inside a shared library (BIP5058E). */
+  function valSpec(subDir) {
+    var D = subDir ? 'fv/' : '', B = function (n) { return { prefix: n + '.msgnode', ns: n + '.msgnode' }; }, RESET = 'ComIbmResetContentDescriptor', REPLY = 'ComIbmSOAPReply';
+    function sf(name, o) { return Fx.flowXml(D + name + '.subflow', o); }
+    var files = {};
+    files[D + 'Wr.subflow'] = sf('Wr', { uses: [B(RESET)], nodes: [{ type: RESET + '.msgnode', attrs: { resetMessageDomain: 'true' } }] });
+    files[D + 'RepNone.subflow'] = sf('RepNone', { uses: [B(REPLY)], nodes: [{ type: REPLY + '.msgnode', attrs: { validateMaster: 'none' } }] });
+    files[D + 'RepDef.subflow'] = sf('RepDef', { uses: [B(REPLY)], nodes: [{ type: REPLY + '.msgnode', attrs: {} }] });
+    files[D + 'RepProm.subflow'] = sf('RepProm', { uses: [B(REPLY)], props: [{ name: 'validateMaster', def: 'none' }], nodes: [{ type: REPLY + '.msgnode', attrs: {} }], links: [{ prop: 'validateMaster', node: 1, href: REPLY + '.msgnode#Property.validateMaster' }] });
+    files[D + 'Plain.subflow'] = sf('Plain', { nodes: [{ type: 'ComIbmCompute.msgnode', attrs: {} }] });
+    files[D + 'Outer.subflow'] = sf('Outer', { uses: [{ prefix: 'Wr.subflow', ns: D + 'Wr.subflow' }], nodes: [{ type: 'Wr.subflow', attrs: {} }] });
+    return files;
+  }
+  function valApp(name, input, ns) {
+    var D = ns ? 'fv/' : '', U = function (n) { return { prefix: n + '.subflow', ns: D + n + '.subflow' }; };
+    var nodes = [{ type: input + '.msgnode', attrs: {} }], uses = [{ prefix: input + '.msgnode', ns: input + '.msgnode' }];
+    ['Wr', 'RepNone', 'RepDef', 'RepProm', 'Plain', 'Outer'].forEach(function (n) { uses.push(U(n)); nodes.push({ type: n + '.subflow', attrs: {} }); });
+    uses.push(U('RepProm')); nodes.push({ type: 'RepProm.subflow', attrs: { validateMaster: 'contentAndValue' } });
+    var f = {}; f[name + '.msgflow'] = Fx.flowXml(name + '.msgflow', { uses: uses.filter(function (u, i, a) { return a.findIndex(function (x) { return x.prefix === u.prefix; }) === i; }), nodes: nodes });
+    return f;
+  }
+  test('R08', 'Validation (BIP5058E): the merge strategy also keeps subflows that write the message local to an application that validates', { category: 'Library conversion (refactor)' }, async function (a) {
+    await withLC(RF, async function () {
+      var ws = await rfLoad([
+        { name: 'FwV', kind: 'static', files: valSpec(false) },
+        { name: 'AppS', kind: 'app', refs: ['FwV'], files: valApp('AppS', 'ComIbmSOAPInput', false) },
+        { name: 'AppM', kind: 'app', refs: ['FwV'], files: valApp('AppM', 'ComIbmMQInput', false) }]), p = plan13(ws);
+      var names = p.hooks.map(function (h) { return h.subflow; }).sort().join(',');
+      a.eq(names, 'Outer.subflow,RepDef.subflow,RepProm.subflow,Wr.subflow', 'the writer subflows (and the one that nests one) are kept local; RepNone and Plain stay shared: ' + names);
+      a.ok(p.hooks.every(function (h) { return h.properties.some(function (q) { return q.property === 'validateMaster'; }); }), 'recorded with the reason (message validation)');
+      a.ok(!!p.localCopies.AppS, 'the application that validates gets the local copies (the merge strategy records them for every application that uses these subflows, as it does for hooks)');
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(v.passed && v.checks.filter(function (c) { return c.id === 'V13'; })[0].status === 'PASS', 'validation (V13) passes: ' + v.checks.filter(function (c) { return c.status === 'FAIL'; }).map(function (c) { return c.id + ' ' + c.problems.slice(0, 1).join(''); }).join('; '));
+      ACE.workflow.undoLibraryConversion();
+    });
+  });
+  test('S05', 'Validation (BIP5058E): subflows that write the message stay local to an application that validates; others stay shared', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC(SEP, async function () {
+      var ws = await sepLoad([
+        { name: 'FwV', kind: 'static', files: valSpec(true) },
+        { name: 'AppS', kind: 'app', refs: ['FwV'], files: valApp('AppS', 'ComIbmSOAPInput', true) },
+        { name: 'AppM', kind: 'app', refs: ['FwV'], files: valApp('AppM', 'ComIbmMQInput', true) }]);
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(v.passed, 'validation: ' + v.checks.filter(function (c) { return c.status === 'FAIL'; }).map(function (c) { return c.id + ' ' + c.problems.slice(0, 2).join(' | '); }).join('; '));
+      a.ok(v.checks.filter(function (c) { return c.id === 'V13'; })[0].status === 'PASS', 'V13 passes');
+      var flow = cur(ws, 'AppS/AppS.msgflow'), loc = function (n) { return cur(ws, 'AppS/AppS/local/FwV/' + n + '.subflow'); };
+      a.ok(loc('Wr') && /ResetContentDescriptor/.test(loc('Wr')), 'ResetContentDescriptor (no validation property): local copy in the application that validates (SOAP Input validates by default)');
+      a.ok(loc('RepDef'), 'SOAP Reply with default validation: local');
+      a.ok(loc('Outer'), 'a subflow that nests such a subflow: local');
+      a.ok(loc('RepProm'), 'promoted validateMaster set to contentAndValue on the instance: local');
+      a.ok(!loc('RepNone'), 'SOAP Reply with validateMaster none: stays shared');
+      a.ok(!loc('Plain'), 'a Compute-only subflow: stays shared');
+      a.ok(/"fv\/RepNone\.subflow"/.test(flow) && /"fv\/Plain\.subflow"/.test(flow) && /"AppS\/local\/FwV\/Wr\.subflow"/.test(flow), 'the application flow points at the local copies and at the shared subflows');
+      var m = cur(ws, 'AppM/AppM.msgflow');
+      a.ok(!cur(ws, 'AppM/AppM/local/FwV/Wr.subflow') && /"fv\/Wr\.subflow"/.test(m), 'an application whose input does not validate (MQ Input) keeps using the shared subflows');
+      var note = ws.ws13.overlay['AppS/AppS/local/FwV/Wr.subflow'];
+      a.ok(note && /BIP5058E/.test(JSON.stringify(note.history || note)), 'the change log of the copy names the reason (BIP5058E)');
+      ACE.workflow.undoLibraryConversion();
+    });
+  });
+  test('S06', 'Validation (BIP5058E): the type-change-only strategy cannot keep the subflow local, so validation reports it; a JavaCompute subflow is only warned about', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC({ enabled: true, strategy: 'in-place' }, async function () {
+      var ws = await lcLoad([
+        { name: 'FwV', kind: 'static', files: valSpec(true) },
+        { name: 'AppS', kind: 'app', refs: ['FwV'], files: valApp('AppS', 'ComIbmSOAPInput', true) }], { enabled: true });
+      var run = ACE.workflow.convertLibraries(), c = run.targets[0].validation.checks.filter(function (x) { return x.id === 'V13'; })[0];
+      a.eq(c.status, 'FAIL', 'V13 fails for the in-place conversion');
+      a.ok(c.problems.some(function (p) { return /BIP5058E/.test(p) && /Keep libraries separate/.test(p); }), 'and tells what to do: ' + c.problems[0].slice(0, 160));
+      ACE.workflow.undoLibraryConversion();
+    });
+    await withLC(SEP, async function () {
+      var jfiles = valSpec(true); jfiles['fv/Jv.subflow'] = Fx.flowXml('fv/Jv.subflow', { uses: [{ prefix: 'ComIbmJavaCompute.msgnode', ns: 'ComIbmJavaCompute.msgnode' }, { prefix: 'ComIbmResetContentDescriptor.msgnode', ns: 'ComIbmResetContentDescriptor.msgnode' }], nodes: [{ type: 'ComIbmJavaCompute.msgnode', attrs: { javaClass: 'p.Load' } }, { type: 'ComIbmResetContentDescriptor.msgnode', attrs: {} }] });
+      var app = valApp('AppS', 'ComIbmSOAPInput', true), flow = app['AppS.msgflow'];
+      app['AppS.msgflow'] = flow.replace('xmlns:Plain.subflow=', 'xmlns:Jv.subflow="fv/Jv.subflow" xmlns:Plain.subflow=').replace('<composition>', '<composition><nodes xmi:type="Jv.subflow:FCMComposite_1" xmi:id="FCMComposite_1_99" location="0,0"><translation xmi:type="utility:ConstantString" string="Jv"/></nodes>');
+      var ws = await sepLoad([{ name: 'FwV', kind: 'static', files: jfiles }, { name: 'AppS', kind: 'app', refs: ['FwV'], files: app }]), p = plan13(ws);
+      a.ok(!cur(ws, 'AppS/AppS/local/FwV/Jv.subflow'), 'the Java-compute subflow is not copied into the application');
+      a.ok((p.warnings || []).some(function (w) { return /Jv\.subflow|fv\/Jv/.test(w) && /JavaCompute/.test(w) && /BIP5058E/.test(w); }), 'a subflow that needs the model but holds a JavaCompute node is not moved; a warning says so');
     });
   });
   test('S03', 'Real workspace ZIP(s): the separate strategy keeps all library names; ContentCreate converts and validates', { category: 'Library conversion (separate)', requires: 'workspace' }, async function (a, env) {

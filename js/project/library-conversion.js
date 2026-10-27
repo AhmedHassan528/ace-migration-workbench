@@ -1,4 +1,4 @@
-/* Static-to-shared library conversion (optional; Settings > Library conversion).
+/* Static-to-shared library conversion (the Static-to-Shared Libraries page).
  *
  * What a shared library IS in ACE 12/13 (verified, see docs/LIBRARY-CONVERSION.md):
  *   - a library project whose .project has the nature com.ibm.etools.msgbroker.tooling.sharedLibraryNature
@@ -539,6 +539,23 @@
       });
     });
     check('V12', 'Java routines in shared libraries load their classes from the shared library (CLASSLOADER clause)', v12);
+    // V13 (R11, verified on ACE 13.0.2.0): an application that validates its messages must not run a node that writes the message inside a shared library
+    var v13 = [], v13w = [], sharedSubs = {};
+    shared.forEach(function (p) { p.files.forEach(function (f) { if (/\.subflow$/i.test(f.rel)) { var t13 = f.text() || '', n13 = (/\bnsURI="([^"]+)"/.exec(t13) || [])[1]; if (n13) sharedSubs[n13] = { text: t13, owner: p.name }; } }); });
+    st.projects.filter(function (p) { return p.kind === 'application'; }).forEach(function (p) {
+      if (!p.files.some(function (f) { return /\.msgflow$/i.test(f.rel) && ACE.libref.flowValidates(f.text() || ''); })) return;
+      p.files.forEach(function (f) {
+        if (!/\.(msgflow|subflow)$/i.test(f.rel)) return;
+        ACE.libref.subflowNodes(f.text() || '').forEach(function (nd) {
+          if (!sharedSubs[nd.ns]) return;
+          var hit = ACE.libref.validationBound(sharedSubs, nd.ns, nd.attrs, 0);
+          if (hit && /ComIbmJavaCompute\.msgnode:FCMComposite_1"/.test(sharedSubs[nd.ns].text)) { v13w.push(f.outPath + ': uses shared subflow ' + nd.ns + ' (' + sharedSubs[nd.ns].owner + '), which holds a JavaCompute node, so it cannot be moved into the application, and which reaches a ' + hit.node + ' node (in ' + hit.subflow + ') that writes the message. It fails with BIP5058E only if that path runs while validation is on (typically an error path): test it, or switch validation off there.'); }
+          else if (hit) v13.push(f.outPath + ': uses shared subflow ' + nd.ns + ' (' + sharedSubs[nd.ns].owner + '), which contains a ' + hit.node + ' node that writes the message while validation is on: BIP5058E "a message model for the shared library cannot be located". Use "Keep libraries separate" (it keeps such subflows local to the application) or switch validation off.');
+        });
+      });
+    });
+    check('V13', 'No application that validates messages uses a shared subflow with a node that writes the message (BIP5058E)', util.uniq(v13));
+    if (v13w.length) checks.push({ id: 'V13b', title: 'Shared subflows with a JavaCompute node that also reach a node writing the message (cannot be kept local; check by hand)', status: 'WARN', problems: util.uniq(v13w) });
     if (preexisting.length) checks.push({ id: 'V0', title: 'References that were already unresolved in the input (not caused by the conversion; fix them in the source)', status: 'WARN', problems: util.uniq(preexisting) });
     var again = LC.analyze(ws, cfg, copy);
     check('V7', 'Repeatable: analysing the converted copy again plans no further changes', again.edits.map(function (e) { return 'would change ' + e.path + ': ' + e.notes.join('; '); }));

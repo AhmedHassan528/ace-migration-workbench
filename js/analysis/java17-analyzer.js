@@ -99,60 +99,6 @@
     return out;
   };
 
-  /* Load API reference JARs (e.g. ACE 13 jplugin2.jar) into a class map for member-existence checks. */
-  j17.buildApiIndex = async function (jarFiles) {
-    var idx = { classes: {}, sources: [] };
-    for (var i = 0; i < jarFiles.length; i++) {
-      var f = jarFiles[i];
-      var bytes = await util.readFileBytes(f);
-      var info = await ACE.jars.inspect(f.name, bytes, {});
-      info.classes.forEach(function (c) {
-        idx.classes[c.name] = { superName: c.superName, interfaces: c.interfaces, methods: new Set(c.methods.map(function (m) { return m.name + m.desc; })), methodNames: new Set(c.methods.map(function (m) { return m.name; })), fields: new Set(c.fields.map(function (x) { return x.name; })) };
-      });
-      idx.sources.push({ name: f.name, size: bytes.length, sha256: await util.sha256Hex(bytes), classes: info.classCount });
-    }
-    return idx;
-  };
-
-  function findMember(idx, owner, kind, name, desc, depth) {
-    if (depth > 20) return 'unknown';
-    var c = idx.classes[owner];
-    if (!c) return 'class-missing';
-    if (kind === 'field' ? c.fields.has(name) : c.methods.has(name + desc)) return 'found';
-    var supers = [c.superName].concat(c.interfaces || []).filter(Boolean);
-    for (var i = 0; i < supers.length; i++) {
-      if (!idx.classes[supers[i]]) { if (/^java\//.test(supers[i])) return 'found-unverified'; continue; }
-      var r = findMember(idx, supers[i], kind, name, desc, depth + 1);
-      if (r === 'found' || r === 'found-unverified') return r;
-    }
-    if (kind === 'method' && c.methodNames.has(name)) return 'signature-changed';
-    return 'member-missing';
-  }
-
-  /* Check references into API packages against the reference index. */
-  j17.apiCheck = function (cf, idx, prefixes, ctx) {
-    var out = [];
-    if (!idx) return out;
-    var seen = {};
-    cf.memberRefs.forEach(function (r) {
-      if (!r.owner || !prefixes.some(function (p) { return r.owner.indexOf(p) === 0; })) return;
-      var key = r.owner + '.' + r.name + r.desc; if (seen[key]) return; seen[key] = 1;
-      var res = findMember(idx, r.owner, r.kind, r.name, r.desc, 0);
-      if (res === 'found' || res === 'found-unverified') return;
-      var msg = res === 'class-missing' ? 'class ' + r.owner.replace(/\//g, '.') + ' not found in reference JARs'
-        : res === 'signature-changed' ? 'method ' + r.name + ' exists but not with descriptor ' + r.desc
-        : r.kind + ' ' + r.name + r.desc + ' not found in ' + r.owner.replace(/\//g, '.');
-      out.push({
-        id: util.uid('jf'), ruleId: 'J17-API-REF', severity: res === 'class-missing' ? 'Error' : 'Warning', status: 'verified-against-reference-jars', confidence: res === 'class-missing' ? 'high' : 'medium',
-        title: 'API reference check: ' + (res === 'class-missing' ? 'class not present' : 'member not present') + ' in imported ACE 13 API JARs',
-        why: 'The reference JARs imported in Settings were scanned and this ' + r.kind + ' was not found (inheritance through non-imported superclasses is assumed to resolve).',
-        action: 'Confirm with a Java 17 compile against the ACE 13.0.8 runtime classes; adapt the code to the ACE 13 API.',
-        autofix: null, autofixAvailable: false, refs: [], file: ctx.jarVPath + '!/' + cf.path, line: null, className: cf.name.replace(/\//g, '.'), evidence: [msg], source: 'bytecode', scope: ctx.scope, jar: ctx.jarName
-      });
-    });
-    return out;
-  };
-
   /* Analyse the whole workspace. */
   j17.analyzeWorkspace = function (ws, opts) {
     opts = opts || {};
@@ -170,7 +116,6 @@
         if (scope === 'application') summary.applicationTargets[cf.javaVersion] = (summary.applicationTargets[cf.javaVersion] || 0) + 1;
         var ctx = { jarVPath: jr.occurrences[0], jarName: jr.name, scope: scope };
         var fs = j17.analyzeClass(cf, rules, ctx);
-        if (opts.apiIndex && scope === 'application') fs = fs.concat(j17.apiCheck(cf, opts.apiIndex, ['com/ibm/broker/'], ctx));
         if (scope === 'application') { findings = findings.concat(fs); return; }
         // Dependency JARs: one aggregated finding per rule, listing the affected classes.
         fs.forEach(function (f) { (depByRule[f.ruleId] = depByRule[f.ruleId] || []).push(f); });

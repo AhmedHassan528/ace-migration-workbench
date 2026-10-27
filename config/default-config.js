@@ -1,7 +1,7 @@
-/* Default configuration. Values changed in Settings are stored in this browser (localStorage) and
- * can be exported/imported as JSON. Edit this file to change the defaults for every user. */
+/* Default configuration. There is no settings page and nothing is stored in the browser: edit this file to
+ * change the defaults for every user. Per-page choices live in the page (see js/workflow.js). */
 window.ACE_DEFAULT_CONFIG = {
-  sourceVersion: '12.0.5',     // fixed: see config/versions.js (strict mode; Settings cannot change it)
+  sourceVersion: '12.0.5',     // fixed: see config/versions.js (strict mode)
   targetVersion: '13.0.8',     // fixed: see config/versions.js
   limits: {
     maxFileSizeMB: 256,      // largest single extracted entry
@@ -12,7 +12,7 @@ window.ACE_DEFAULT_CONFIG = {
   },
   // JAR exclusion patterns: file-name globs (jconn*.jar), "pkg:com.vendor" or "sha256:<hash>".
   exclusions: ['ojdbc*.jar', 'db2jcc*.jar', 'mssql-jdbc*.jar', 'sqljdbc*.jar', 'mysql-connector*.jar', 'postgresql*.jar', 'jconn*.jar'],
-  jarOverrides: {},          // sha256 -> 'include' | 'exclude' (set from the Java Decompiler view)
+  jarOverrides: {},          // sha256 -> 'include' | 'exclude' (set per page on the BAR Export page; not stored)
   decompiler: { engine: 'workbench-js' },     // built-in vanilla JavaScript decompiler (no external runtime)
   project: { keepOriginalJar: true, libIncludeExcluded: true },
   export: { includeOriginalBar: true, decompileHeader: true },

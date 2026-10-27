@@ -160,7 +160,7 @@
       if (jps.length || notDecompiled.length) {
         var jg = node(root.id + '/g:java', 'group', 'Java');
         jps.forEach(function (jp) { jg.children.push(javaSourceTree(jp, jg.id)); });
-        notDecompiled.forEach(function (j) { jg.children.push(node(jg.id + '/nd:' + j.name, 'info', util.stripExt(j.name) + ': not decompiled yet (Java Decompiler)')); });
+        notDecompiled.forEach(function (j) { jg.children.push(node(jg.id + '/nd:' + j.name, 'info', util.stripExt(j.name) + ': not decompiled (kept as a binary JAR)')); });
         root.children.push(jg);
       }
       var lr = refs[p.name] || [];

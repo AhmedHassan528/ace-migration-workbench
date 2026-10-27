@@ -142,7 +142,7 @@ window.ACE_JAVA_RULES = {
     { id: 'J17-ACE-API', severity: 'Manual Review', status: 'heuristic', confidence: 'medium',
       title: 'Uses the IBM ACE Java plug-in API',
       match: { classPrefix: ['com/ibm/broker/'] },
-      why: 'The JavaCompute/plug-in API is provided by the runtime. Method existence is checked against reference JARs when they are imported (Settings > API reference JARs), and confirmed by the Java 17 compile check against ACE 13 jplugin2.jar/javacompute.jar.',
+      why: 'The JavaCompute/plug-in API is provided by the runtime. Method existence is not checked here: confirm it with the Java 17 compile check against ACE 13 jplugin2.jar/javacompute.jar.',
       action: 'Run the compile check against the ACE 13.0.8 runtime JARs.', autofix: null, refs: [] }
   ]
 };

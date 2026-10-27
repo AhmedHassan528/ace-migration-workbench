@@ -2,7 +2,7 @@
  *
  *   Source: IBM App Connect Enterprise 12.0.5   Target: IBM App Connect Enterprise 13.0.8
  *
- * These values are fixed. Settings cannot change them, and saved settings from older versions of
+ * These values are fixed. Nothing can change them, and no setting from an older version of
  * the workbench are overridden on load. Every fact below was read on the cited IBM page on
  * 2026-10-21 ("read" = the page text was fetched and the statement located). Facts that could NOT be
  * confirmed for the exact fix pack are listed under `unverified` and are reported as such. */
@@ -44,7 +44,7 @@ window.ACE_VERSIONS = Object.freeze({
   ]),
   unverified: Object.freeze([
     'The ACE 12.0 JRE-limitations topic describes the latest 12.0 fix pack, not 12.0.5 specifically; the 12.0.5 statement relies on the 12.0.5.0 download page only.',
-    'No IBM page was found that lists Java-API (jplugin2 / javacompute) signature changes between 12.0.5 and 13.0.8. API compatibility is checked only when ACE 13.0.8 API JARs are imported in Settings.',
+    'No IBM page was found that lists Java-API (jplugin2 / javacompute) signature changes between 12.0.5 and 13.0.8. API compatibility is not checked: the ACE 13.0.8 API JARs are not available to this tool.',
     'No 13.0.8-specific "What\'s new" list was retrieved; behaviour changes introduced between 13.0.1 and 13.0.8 other than those cited are not covered.',
     'Runtime probes (docs/VERIFIED-FACTS.md) ran on ACE 13.0.2.0 Java 17, not on 13.0.8.'
   ])

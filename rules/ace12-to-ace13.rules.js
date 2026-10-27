@@ -1,9 +1,8 @@
-/* IBM ACE 12.0 -> 13.0 migration rules (built-in default set). Export/import as JSON in Settings.
+/* IBM ACE 12.0 -> 13.0 migration rules (built-in default set).
  *
  * status:
- *   documented - backed by IBM documentation (refs). Pages were read online on 2026-10-20; import
- *                local copies (Settings > Documentation) so the check can be confirmed offline.
- *                Each rule's docKeywords are searched in the imported documents.
+ *   documented - backed by IBM documentation (refs). Pages were read online on 2026-10-20; they are not
+ *                available offline, so these rules are shown as UNVERIFIED.
  *   verified   - behaviour observed with a probe on the local ACE 13.0.2.0 Java 17 runtime (docs/VERIFIED-FACTS.md).
  *   observed   - a fact read directly from the BAR contents (no interpretation of IBM rules).
  *   heuristic  - engineering judgement; NOT an IBM rule. Treat as a prompt for review.
@@ -138,7 +137,7 @@ window.ACE_ACE_RULES = {
     { id: 'ACE13-BEHAVIOUR', severity: 'Manual Review', status: 'documented', confidence: 'medium', category: 'Items requiring Toolkit / runtime verification',
       title: 'Review "Behavioral changes in Version 13.0"',
       match: { always: true },
-      why: 'IBM lists behaviour changes that "might affect your post-migration development tasks". The workbench does not contain that list, so import it in Settings > Documentation to check it offline.',
+      why: 'IBM lists behaviour changes that "might affect your post-migration development tasks". The workbench does not contain that list: read it in the IBM documentation.',
       action: 'Read the behavioural changes topic for 13.0.8 and record whether each item affects this application.',
       docKeywords: ['Behavioral changes'], refs: [{ title: 'Preparing for migration (links Behavioral changes in Version 13.0)', url: 'https://www.ibm.com/docs/en/app-connect/13.0.x?topic=migrating-preparing-migration' }] },
     { id: 'ACE13-BACKUP', severity: 'Information', status: 'documented', confidence: 'high', category: 'Deployment configuration',

@@ -59,7 +59,7 @@
       validation: rep.validation(ws),
       importedDocs: (ws.docsUsed || []).map(function (d) { return { name: d.name, size: d.text.length, importedAt: d.importedAt }; }),
       ruleSets: ws.ruleSetsUsed || [], facts: ws.facts ? { stats: ws.facts.stats, dataSources: ws.facts.dataSources, endpoints: ws.facts.endpoints, policyRefs: ws.facts.policyRefs, missingPolicyProjects: ws.facts.missingPolicyProjects, unresolved: ws.facts.unresolved, filePaths: ws.facts.filePaths } : null,
-      findings: ws.aceFindings || [], checklist: ws.checklist || [],
+      findings: ws.aceFindings || [],
       changeLog: rep.changeLog(ws), proposals: (ws.proposals || []).map(function (p) { return { fixId: p.fixId, outPath: p.outPath, status: p.status, reason: p.reason, notes: p.notes }; }) });
   };
 
@@ -143,17 +143,6 @@
     return L.join('\r\n');
   };
 
-  rep.checklistText = function (ws) {
-    var L = ['PRE-MIGRATION CHECKLIST  (ACE ' + window.ACE_VERSIONS.source + ' -> ACE ' + window.ACE_VERSIONS.target + ' / Java 17)', '=============================================================', 'BAR: ' + ws.barName, 'Status legend: FAIL = must fix, ATTENTION = review, INFO, PASS, TOOLKIT = verify in IBM Toolkit/runtime, UNKNOWN = not evaluated', ''];
-    var cat = null;
-    (ws.checklist || []).forEach(function (i) {
-      if (i.category !== cat) { cat = i.category; L.push('', '## ' + cat); }
-      L.push('[' + i.status.toUpperCase() + '] ' + i.title + '   (basis: ' + i.basis + ')');
-      if (i.detail) L.push(i.detail.split('\n').map(function (x) { return '      ' + x; }).join('\n'));
-    });
-    return L.join('\r\n');
-  };
-
   /* ---------- HTML ---------- */
   var CSS = 'body{font:14px/1.45 Segoe UI,Arial,sans-serif;margin:24px;color:#1b1f24;background:#fff}h1{font-size:22px}h2{font-size:17px;margin-top:28px;border-bottom:1px solid #ccd;padding-bottom:4px}table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border:1px solid #d5d9de;padding:4px 6px;vertical-align:top;text-align:left;font-size:13px}th{background:#f1f3f5}code,pre{font:12px Consolas,monospace}pre{background:#f6f8fa;padding:8px;overflow:auto;white-space:pre-wrap}.Error,.fail{color:#a40e26;font-weight:600}.Warning,.attention{color:#8a5300;font-weight:600}.Manual{color:#5b3ea6;font-weight:600}.pass{color:#1a7f37;font-weight:600}.muted{color:#667}.box{border:1px solid #d5d9de;border-radius:6px;padding:10px;margin:8px 0;background:#fafbfc}';
 
@@ -185,9 +174,8 @@
       h += '<h3>Unresolved risks</h3>' + (mg.unresolvedRisks.length ? '<ul>' + mg.unresolvedRisks.map(function (r) { return '<li>[' + esc(r.classification) + '] ' + esc(r.title) + '</li>'; }).join('') + '</ul>' : '<p>None of high risk.</p>');
       h += '<h3>Unverified assumptions</h3><ul>' + mg.unverifiedAssumptions.map(function (a) { return '<li>' + esc(a) + '</li>'; }).join('') + '</ul>';
     }
-    h += '<h2>5. Pre-migration checklist</h2>' + table(mg.checklist, [['Category', function (i) { return esc(i.category); }], ['Check', function (i) { return esc(i.title); }], ['Status', function (i) { return esc(i.status.toUpperCase()); }, function (i) { return i.status; }], ['Basis', function (i) { return esc(i.basis); }], ['Detail', function (i) { return '<pre>' + esc(i.detail || '') + '</pre>'; }]]);
-    h += '<h2>6. Change log</h2>' + (mg.changeLog.length ? mg.changeLog.map(function (e) { return '<div class="box"><b>' + esc(e.action.toUpperCase() + ' ' + e.path) + '</b> - ' + esc(e.title) + ' <span class="muted">' + esc(e.copy + ', ' + e.t) + '</span>' + (e.notes.length ? '<ul>' + e.notes.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>' : '') + (e.unifiedDiff ? '<pre>' + esc(e.unifiedDiff) + '</pre>' : '') + '</div>'; }).join('') : '<p>No changes applied.</p>');
-    h += '<h2>7. Not verified by this tool</h2><ul><li>Import and build in the IBM ACE Toolkit (12 or 13)</li><li>ESQL compilation and flow validation</li><li>Deployment and runtime behaviour on ACE ' + esc(window.ACE_VERSIONS.target) + ' / Java 17</li><li>Equivalence of decompiled Java with the original source</li></ul>';
+    h += '<h2>5. Change log</h2>' + (mg.changeLog.length ? mg.changeLog.map(function (e) { return '<div class="box"><b>' + esc(e.action.toUpperCase() + ' ' + e.path) + '</b> - ' + esc(e.title) + ' <span class="muted">' + esc(e.copy + ', ' + e.t) + '</span>' + (e.notes.length ? '<ul>' + e.notes.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>' : '') + (e.unifiedDiff ? '<pre>' + esc(e.unifiedDiff) + '</pre>' : '') + '</div>'; }).join('') : '<p>No changes applied.</p>');
+    h += '<h2>6. Not verified by this tool</h2><ul><li>Import and build in the IBM ACE Toolkit (12 or 13)</li><li>ESQL compilation and flow validation</li><li>Deployment and runtime behaviour on ACE ' + esc(window.ACE_VERSIONS.target) + ' / Java 17</li><li>Equivalence of decompiled Java with the original source</li></ul>';
     return h + '</body></html>';
   };
 })(window.ACE);

@@ -1,19 +1,20 @@
-/* View: static-to-shared library conversion (optional feature; js/project/library-conversion.js). */
+/* Page 3: Static-to-Shared Library Conversion (js/project/library-conversion.js). Input: source code with its libraries
+ * (a Toolkit workspace ZIP; several ZIPs or a folder are combined) on this page only. The configuration lives in this page's controller. */
 (function (ACE) {
   'use strict';
   var UI = ACE.ui, util = ACE.util, esc = util.esc;
   var open = {};
   var DEC = { convert: ['pass', 'will be converted'], 'already-shared': ['info', 'already shared'], blocked: ['fail', 'cannot be converted'], 'not-selected': ['unknown', 'not selected'] };
 
-  function cfg() { var S = ACE.settings.current; S.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, S.libraryConversion || {}); return S.libraryConversion; }
+  var V = {};
+  function cfg() { var s = V.ctl.state; s.libconv = s.libconv || Object.assign({}, ACE.libconv.DEFAULTS, { enabled: true }); return s.libconv; }
 
   function configCard(st) {
     var c = cfg(), ws = st.ws, statics = [];
-    if (ws && !ws.fatal) statics = ACE.libconv.state(ws, 'ws13').projects.filter(function (p) { return p.kind === 'static-library'; }).map(function (p) { return p.name; });
+    if (ws) statics = ACE.libconv.state(ws, 'ws13').projects.filter(function (p) { return p.kind === 'static-library'; }).map(function (p) { return p.name; });
     var auto = c.libraries === 'auto' || !c.libraries;
     var h = '<div class="card"><div class="formgrid">' +
-      '<label>Conversion</label><label class="inline"><input type="checkbox" id="lcOn"' + (c.enabled ? ' checked' : '') + '> enabled (when off, the migration works exactly as before)</label>' +
-      '<label>Source version</label><div>ACE ' + esc(window.ACE_VERSIONS.source) + ' (fixed, see Settings)</div>' +
+      '<label>Source version</label><div>ACE ' + esc(window.ACE_VERSIONS.source) + ' (fixed)</div>' +
       '<label>Target(s)</label><div><label class="inline"><input type="checkbox" id="lcT12"' + (c.targets.indexOf('ace12') >= 0 ? ' checked' : '') + '> ACE ' + esc(window.ACE_VERSIONS.source) + ' (ACE 12 package)</label> &nbsp; <label class="inline"><input type="checkbox" id="lcT13"' + (c.targets.indexOf('ace13') >= 0 ? ' checked' : '') + '> ACE ' + esc(window.ACE_VERSIONS.target) + ' (ACE 13 package)</label></div>' +
       '<label>Library mode</label><div>shared</div>' +
       '<label>Strategy</label><div>' +
@@ -78,14 +79,14 @@
     return h;
   }
 
-  UI.register('libconv', {
+  V.input = { title: 'Source code and its libraries', hint: 'A Toolkit workspace ZIP that holds the applications and the static libraries they use. If the libraries are in another ZIP, choose both ZIPs; they are combined. A folder also works. A BAR is not accepted here.', accept: '.zip', multiple: true, folder: true, kind: 'workspace', reject: /[.](bar|jar|appzip|libzip|shlibzip)$/i, rejectWhy: 'this page converts source code, not a BAR or a JAR' };
+  Object.assign(V, {
     render: function (st) {
       var c = cfg();
-      var h = '<h1>Shared Library Conversion</h1><p class="lead">Converts static libraries into ACE shared libraries so a framework change is deployed once instead of rebuilding every service. A shared library is a library whose <code>.project</code> has the <code>sharedLibraryNature</code>; every application and shared library that uses it must list it in its descriptor (<code>sharedLibraryReference</code>), and it is packaged as a separate <code>.shlibzip</code>. Libraries that IBM does not allow to be shared (message flows, ESQL or subflows in the default schema, unsupported resources) are reported, never forced.</p>';
-      h += configCard(st);
-      var n = UI.needBar(st); if (n) return h + n;
+      var h = '<h1>Static-to-Shared Library Conversion</h1><p class="lead">Converts static libraries into ACE shared libraries so a framework change is deployed once instead of rebuilding every service. A shared library is a library whose <code>.project</code> has the <code>sharedLibraryNature</code>; every application and shared library that uses it must list it in its descriptor (<code>sharedLibraryReference</code>), and it is packaged as a separate <code>.shlibzip</code>. Libraries that IBM does not allow to be shared (message flows, ESQL or subflows in the default schema, unsupported resources) are reported, never forced.</p>';
+      h += UI.inputHtml(V) + configCard(st);
+      if (!st.ws) return h;
       var ws = st.ws;
-      if (!c.enabled) return h + '<div class="banner">Conversion is <b>disabled</b>. The migration and its exports are exactly as without this feature.</div>';
       if (!c.targets.length) return h + '<div class="banner warn">Choose at least one target.</div>';
       var plan = ws.libConversion;
       if (!plan) return h + '<div class="banner">Press <b>Save and analyse</b>.</div>';
@@ -102,10 +103,11 @@
       return h;
     },
     bind: function (el, st) {
-      var S = ACE.settings.current, c = cfg();
+      UI.bindInput(el, V);
+      var c = cfg();
       UI.$('#lcSave', el).onclick = function () {
         var pick = UI.$$('input[name=lcSel]', el).filter(function (r) { return r.checked; })[0];
-        c.enabled = UI.$('#lcOn', el).checked;
+        c.enabled = true;
         c.targets = [UI.$('#lcT12', el).checked ? 'ace12' : null, UI.$('#lcT13', el).checked ? 'ace13' : null].filter(Boolean);
         c.libraries = !pick || pick.value === 'auto' ? 'auto' : UI.$$('.lcLib', el).filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
         c.knownSharedLibraries = UI.$('#lcKnown', el).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
@@ -114,19 +116,18 @@
         c.strategy = strat ? strat.value : 'separate'; c.strategyVersion = 2;
         c.sharedLibraryName = UI.$('#lcName', el).value.trim();
         c.schema = UI.$('#lcSchema', el).value.trim();
-        S.libraryConversion = c; ACE.settings.save();
-        if (st.ws && !st.ws.fatal) ACE.workflow.analyze();
+        if (st.ws) V.ctl.analyze();
         ACE.log.info('Library conversion settings saved (' + (c.enabled ? 'enabled' : 'disabled') + ')');
         UI.refresh();
       };
       UI.$$('.lcMore', el).forEach(function (b) { b.onclick = function () { var k = b.getAttribute('data-k'); open[k] = !open[k]; UI.refresh(); }; });
-      if (!st.ws || st.ws.fatal || !c.enabled) return;
+      if (!st.ws) return;
       var ws = st.ws;
       var run = UI.$('#lcRun', el); if (run) run.onclick = function () {
         var p = ws.libConversion, libs = util.uniq([].concat.apply([], p.targets.map(function (t) { return t.plan.converted; }))), files = p.targets.reduce(function (a, t) { return a + t.plan.edits.length; }, 0);
         var tp = p.targets[0].plan, what = tp.target && tp.target.sharedLibrary ? 'Merge ' + libs.join(', ') + ' into shared library ' + tp.target.sharedLibrary + ' (schema ' + tp.target.schema + ') and update every reference' : 'Convert ' + libs.length + ' library(ies) to shared libraries: ' + libs.join(', ');
         UI.ask(what + '?\n\n' + files + ' file change(s) in the ' + c.targets.map(function (t) { return t === 'ace12' ? 'ACE 12' : 'ACE 13'; }).join(' and ') + ' working copy' + (tp.target && tp.target.sharedLibrary ? ' (moved, created and modified files are listed under "Changes planned")' : ': .project natures and descriptor references only') + '. The original files stay unchanged (exported under _original-before-changes/) and Undo restores them.', function () {
-          try { var r = ACE.workflow.convertLibraries(); var bad = r.targets.filter(function (t) { return t.validation && !t.validation.passed; }); if (bad.length) UI.notify('Converted, but validation reported problems. See "Last conversion".'); }
+          try { var r = V.ctl.convertLibraries(); var bad = r.targets.filter(function (t) { return t.validation && !t.validation.passed; }); if (bad.length) UI.notify('Converted, but validation reported problems. See "Last conversion".'); }
           catch (e) { UI.notify('Conversion was not applied: ' + e.message); }
           UI.refresh();
         }, { ok: 'Convert' });
@@ -135,16 +136,17 @@
         b.onclick = function () {
           var target = b.getAttribute('data-t'), ver = target === 'ace12' ? window.ACE_VERSIONS.source : window.ACE_VERSIONS.target;
           UI.run('Build converted ' + target.toUpperCase() + ' package', async function (cancel, progress) {
-            var r = await ACE.workflow.exportPackage(target, function (d, t) { progress('zip', d, t); }, cancel);
+            var r = await V.ctl.exportPackage(target, function (d, t) { progress('zip', d, t); }, cancel);
             util.download(r.blob, util.stripExt(ws.barName) + '-ACE' + ver + '-shared-libraries.zip');
           });
         };
       });
-      var un = UI.$('#lcUndo', el); if (un) un.onclick =function () { UI.ask('Undo the library conversion in every working copy?', function () { var n = ACE.workflow.undoLibraryConversion(); ACE.log.info('Undid ' + n + ' conversion change(s)'); UI.refresh(); }, { ok: 'Undo' }); };
+      var un = UI.$('#lcUndo', el); if (un) un.onclick =function () { UI.ask('Undo the library conversion in every working copy?', function () { var n = V.ctl.undoLibraryConversion(); ACE.log.info('Undid ' + n + ' conversion change(s)'); UI.refresh(); }, { ok: 'Undo' }); };
       function rep() { return ws.libConversionRun || ws.libConversion; }
       UI.$('#lcMd', el).onclick = function () { util.download(ACE.libconv.reportText(rep()), util.stripExt(ws.barName) + '-library-conversion.md', 'text/markdown'); };
       UI.$('#lcJson', el).onclick = function () { util.download(JSON.stringify(ACE.libconv.reportJson(rep()), null, 2), util.stripExt(ws.barName) + '-library-conversion.json', 'application/json'); };
     }
   });
+  UI.register('libconv', V);
   function hasConversion(ws) { return ['ws12', 'ws13'].some(function (c) { var o = (ws[c] && ws[c].overlay) || {}; return Object.keys(o).some(function (p) { return o[p].history.some(function (h) { return h.kind === ACE.libconv.KIND; }); }); }); }
 })(window.ACE);

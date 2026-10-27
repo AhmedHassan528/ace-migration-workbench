@@ -8,23 +8,69 @@
   UI.$ = function (sel, root) { return (root || document).querySelector(sel); };
   UI.$$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
 
-  UI.register = function (name, view) { UI.views[name] = view; };
+  /* Every page owns its input and its state: a page gets its own workflow controller (view.ctl) and nothing
+   * is shared with another page. A page that works on a file (BAR or source code) declares its input in
+   * view.input (see UI.inputHtml); the page that compares two inputs (compare) keeps its own state. */
+  UI.register = function (name, view) {
+    view.id = name;
+    if (view.input) view.ctl = ACE.workflow.create();
+    UI.views[name] = view;
+  };
+  UI.firstView = function () { var a = UI.$('#nav a[data-view]'); return a ? a.getAttribute('data-view') : null; };
   UI.show = function (name) {
-    if (!UI.views[name]) name = 'dashboard';
+    if (!UI.views[name]) name = UI.firstView();
     UI.current = name;
     UI.$$('#nav a[data-view]').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-view') === name); });
-    var el = UI.$('#view');
-    try { el.innerHTML = UI.views[name].render(ACE.workflow.state); if (UI.views[name].bind) UI.views[name].bind(el, ACE.workflow.state); }
+    var el = UI.$('#view'), v = UI.views[name], st = v.ctl ? v.ctl.state : null;
+    try { el.innerHTML = v.render(st); if (v.bind) v.bind(el, st); }
     catch (e) { el.innerHTML = '<div class="banner err">View failed to render: ' + esc(e.message) + '</div>'; ACE.log.error('Render ' + name + ': ' + e.message, e.stack); }
     try { location.hash = name; } catch (e) { /* ignore */ }
   };
   UI.refresh = function () { if (UI.current) UI.show(UI.current); };
 
-  UI.needBar = function (state) {
-    if (!state.ws) return '<div class="banner">Open a BAR file or a Toolkit workspace ZIP first (button at the top).</div>';
-    if (state.ws.fatal) return '<div class="banner err">The file could not be opened: ' + esc(state.ws.fatal.message) + '</div>';
-    return null;
+  /* ---------- the input of one page ----------
+   * view.input = { title, what, accept, multiple, folder, reject: /ext/i, kind: 'bar' | 'workspace' | 'any', hint }
+   *   kind 'bar'       only a BAR is accepted (a Toolkit workspace ZIP is refused with a message)
+   *   kind 'workspace' only source code is accepted: a Toolkit workspace ZIP (several ZIPs are combined) or a folder
+   *   kind 'any'       a BAR or a workspace ZIP */
+  var KIND_ERR = {
+    bar: 'This page takes a BAR file, but "{n}" is source code (a Toolkit workspace ZIP).',
+    workspace: 'This page takes source code (a Toolkit workspace ZIP or folder), but "{n}" is a BAR file. A BAR or a JAR is not accepted here.'
   };
+  UI.inputHtml = function (view) {
+    var o = view.input, ws = view.ctl.state.ws, id = 'in_' + view.id;
+    var h = '<div class="card"><div class="row"><b>' + esc(o.title) + '</b> <span class="muted small">' + esc(o.hint || '') + '</span></div><div class="row">' +
+      '<label class="btn primary" for="' + id + '">Choose ' + (o.multiple ? 'file(s)' : 'file') + '…</label><input type="file" id="' + id + '" accept="' + esc(o.accept) + '"' + (o.multiple ? ' multiple' : '') + ' hidden>' +
+      (o.folder ? ' <label class="btn" for="' + id + 'D">Choose folder…</label><input type="file" id="' + id + 'D" webkitdirectory multiple hidden>' : '') + ' ';
+    if (ws && !ws.fatal) h += '<span><b>' + esc(view.loadedName || ws.barName) + '</b> <span class="muted">(' + util.fmtBytes(ws.barSize) + ', ' + (ws.inputKind === 'workspace' ? 'Toolkit workspace: ' + ws.model.deployables.length + ' project(s)' : 'BAR: ' + ws.model.deployables.length + ' deployable(s)') + ', ' + ws.files.length + ' files)</span></span>';
+    else h += '<span class="muted">nothing loaded</span>';
+    return h + '</div>' + (view.error ? '<div class="banner err">' + esc(view.error) + '</div>' : '') + '</div>';
+  };
+  UI.bindInput = function (el, view) {
+    var id = 'in_' + view.id;
+    function pick(input) { if (input && (input.files && input.files.length || input.folder && input.folder.length || input.zips && input.zips.length)) UI.loadInput(view, input); }
+    var f = UI.$('#' + id, el); if (f) f.onchange = function (e) { var a = Array.prototype.slice.call(e.target.files); e.target.value = ''; pick(view.input.multiple ? { zips: a } : { zips: a.slice(0, 1) }); };
+    var d = UI.$('#' + id + 'D', el); if (d) d.onchange = function (e) { var a = Array.prototype.slice.call(e.target.files); e.target.value = ''; pick({ folder: a }); };
+  };
+  UI.loadInput = function (view, input) {
+    var o = view.input, ctl = view.ctl, names = (input.zips || []).map(function (f) { return f.name; });
+    view.error = null;
+    var bad = names.filter(function (n) { return o.reject && o.reject.test(n); })[0];
+    if (bad) { view.error = '"' + bad + '" is not accepted on this page: ' + (o.rejectWhy || 'wrong kind of input') + '.'; UI.refresh(); return; }
+    return UI.run('Load ' + (names[0] || 'folder'), async function (cancel, progress) {
+      try {
+        var file = o.kind === 'workspace' ? await ACE.workflow.sourceZip(input, { cancel: cancel, progress: progress }) : input.zips[0];
+        ctl.clear(); view.loadedName = null;
+        var ws = await ctl.load(file, { cancel: cancel, progress: progress });
+        if (ws.fatal) { view.error = 'The file could not be opened: ' + ws.fatal.message; ctl.clear(); return; }
+        if (o.kind === 'bar' && ws.inputKind !== 'bar') { view.error = KIND_ERR.bar.replace('{n}', file.name); ctl.clear(); return; }
+        if (o.kind === 'workspace' && ws.inputKind !== 'workspace') { view.error = KIND_ERR.workspace.replace('{n}', file.name); ctl.clear(); return; }
+        view.loadedName = file.name;
+        if (view.onLoaded) view.onLoaded(ws);
+      } catch (e) { if (util.isCancel(e)) throw e; view.error = 'The input could not be read: ' + e.message; ctl.clear(); ACE.log.error(view.error, e.stack); }
+    });
+  };
+  UI.noInput = function (view, what) { return view.ctl.state.ws ? null : '<div class="banner">' + esc(what) + '</div>'; };
 
   /* ---------- progress & cancellation ---------- */
   UI.progress = function (stage, done, total, detail) {

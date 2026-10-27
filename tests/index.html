@@ -26,55 +26,64 @@
 </div>
 <div id="results"></div>
 
-<script src="../js/core/util.js?v=20261022b"></script>
-<script src="../config/default-config.js?v=20261022b"></script>
-<script src="../config/versions.js?v=20261022b"></script>
-<script src="../config/driver-signatures.js?v=20261022b"></script>
-<script src="../js/core/settings.js?v=20261022b"></script>
-<script src="../js/archive/crc32.js?v=20261022b"></script>
-<script src="../js/archive/zip-reader.js?v=20261022b"></script>
-<script src="../js/archive/zip-writer.js?v=20261022b"></script>
-<script src="../js/archive/classify.js?v=20261022b"></script>
-<script src="../js/archive/bar-engine.js?v=20261022b"></script>
-<script src="../js/java/classfile.js?v=20261022b"></script>
-<script src="../js/java/jar-analyzer.js?v=20261022b"></script>
+<script src="../js/core/util.js?v=20261101"></script>
+<script src="../config/default-config.js?v=20261101"></script>
+<script src="../config/versions.js?v=20261101"></script>
+<script src="../config/driver-signatures.js?v=20261101"></script>
+<script src="../js/core/settings.js?v=20261101"></script>
+<script src="../js/archive/crc32.js?v=20261101"></script>
+<script src="../js/archive/zip-reader.js?v=20261101"></script>
+<script src="../js/archive/zip-writer.js?v=20261101"></script>
+<script src="../js/archive/classify.js?v=20261101"></script>
+<script src="../js/archive/bar-engine.js?v=20261101"></script>
+<script src="../js/java/classfile.js?v=20261101"></script>
+<script src="../js/java/jar-analyzer.js?v=20261101"></script>
 <!-- Java decompiler (vanilla JavaScript, no external runtime) -->
-<script src="../js/decompiler/bytecode.js?v=20261022b"></script>
-<script src="../js/decompiler/types.js?v=20261022b"></script>
-<script src="../js/decompiler/ir.js?v=20261022b"></script>
-<script src="../js/decompiler/translate.js?v=20261022b"></script>
-<script src="../js/decompiler/structure.js?v=20261022b"></script>
-<script src="../js/decompiler/passes.js?v=20261022b"></script>
-<script src="../js/decompiler/syntax-check.js?v=20261022b"></script>
-<script src="../js/decompiler/decompiler.js?v=20261022b"></script>
-<script src="../rules/java8-to-java17.rules.js?v=20261022b"></script>
-<script src="../rules/ace12-to-ace13.rules.js?v=20261022b"></script>
-<script src="../js/analysis/msgflow-parser.js?v=20261022b"></script>
-<script src="../js/analysis/esql-parser.js?v=20261022b"></script>
-<script src="../js/analysis/java17-analyzer.js?v=20261022b"></script>
-<script src="../js/analysis/ace-rule-engine.js?v=20261022b"></script>
-<script src="../js/analysis/premigration.js?v=20261022b"></script>
-<script src="../js/analysis/migration-scanner.js?v=20261022b"></script>
-<script src="../js/project/diff.js?v=20261022b"></script>
-<script src="../js/project/transforms.js?v=20261022b"></script>
-<script src="../js/project/eclipse-project.js?v=20261022b"></script>
-<script src="../js/project/explorer-model.js?v=20261022b"></script>
-<script src="../js/project/project-builder.js?v=20261022b"></script>
-<script src="../js/project/library-conversion.js?v=20261022b"></script>
-<script src="../js/project/library-refactor.js?v=20261022b"></script>
-<script src="../js/report/reports.js?v=20261022b"></script>
-<script src="../js/workflow.js?v=20261022b"></script>
-<script>window.ACE.ui = { register: function () {} }; /* only validateRuleSet is needed from the Settings view */</script>
-<script src="../js/ui/views-settings.js?v=20261022b"></script>
-<script src="harness.js?v=20261022b"></script>
-<script src="fixtures.js?v=20261022b"></script>
-<script src="fixtures-classes.js?v=20261022b"></script>
-<script src="test-cases.js?v=20261022b"></script>
+<script src="../js/decompiler/bytecode.js?v=20261101"></script>
+<script src="../js/decompiler/types.js?v=20261101"></script>
+<script src="../js/decompiler/ir.js?v=20261101"></script>
+<script src="../js/decompiler/translate.js?v=20261101"></script>
+<script src="../js/decompiler/structure.js?v=20261101"></script>
+<script src="../js/decompiler/passes.js?v=20261101"></script>
+<script src="../js/decompiler/syntax-check.js?v=20261101"></script>
+<script src="../js/decompiler/decompiler.js?v=20261101"></script>
+<script src="../rules/java8-to-java17.rules.js?v=20261101"></script>
+<script src="../rules/ace12-to-ace13.rules.js?v=20261101"></script>
+<script src="../js/analysis/msgflow-parser.js?v=20261101"></script>
+<script src="../js/analysis/esql-parser.js?v=20261101"></script>
+<script src="../js/analysis/java17-analyzer.js?v=20261101"></script>
+<script src="../js/analysis/ace-rule-engine.js?v=20261101"></script>
+<script src="../js/analysis/migration-scanner.js?v=20261101"></script>
+<script src="../js/project/diff.js?v=20261101"></script>
+<script src="../js/project/transforms.js?v=20261101"></script>
+<script src="../js/project/eclipse-project.js?v=20261101"></script>
+<script src="../js/project/explorer-model.js?v=20261101"></script>
+<script src="../js/project/project-builder.js?v=20261101"></script>
+<script src="../js/project/library-conversion.js?v=20261101"></script>
+<script src="../js/project/library-refactor.js?v=20261101"></script>
+<script src="../js/compare/bar-source-compare.js?v=20261101"></script>
+<script src="../js/report/reports.js?v=20261101"></script>
+<script src="../js/workflow.js?v=20261101"></script>
+<!-- The real UI scripts, mounted on a hidden copy of the page frame, so the tests can drive the actual pages. -->
+<div id="scaffold" hidden><nav id="nav"><a data-view="barexport"></a><a data-view="migrate13"></a><a data-view="libconv"></a><a data-view="compare"></a><a data-view="explorer"></a></nav><main id="view"></main>
+<div class="progress"><div id="progFill"></div><span id="progText"></span></div><button id="cancelBtn"></button><div id="logPanel"></div></div>
+<script src="../js/ui/ui-core.js?v=20261101"></script>
+<script src="../js/ui/export-card.js?v=20261101"></script>
+<script src="../js/ui/views-barexport.js?v=20261101"></script>
+<script src="../js/ui/views-migrate.js?v=20261101"></script>
+<script src="../js/ui/views-libconv.js?v=20261101"></script>
+<script src="../js/ui/views-compare.js?v=20261101"></script>
+<script src="../js/ui/views-explorer.js?v=20261101"></script>
+<script src="harness.js?v=20261101"></script>
+<script src="fixtures.js?v=20261101"></script>
+<script src="fixtures-classes.js?v=20261101"></script>
+<script src="test-cases.js?v=20261101"></script>
+<script src="cmp-tests.js?v=20261101"></script>
+<script src="pages-tests.js?v=20261101"></script>
 <script>
 (function () {
   // Isolated settings: defaults only, never written to this browser's storage by the tests.
   ACE.settings.current = ACE.util.deepClone(window.ACE_DEFAULT_CONFIG);
-  ACE.settings.save = function () { return false; };
   T.render();
   async function env() {
     var e = { barFile: document.getElementById('bar').files[0] || null, workspaceFile: document.getElementById("wsZip").files[0] || null, workspaceFiles: Array.prototype.slice.call(document.getElementById("wsZip").files) };

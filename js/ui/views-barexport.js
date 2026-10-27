@@ -1,19 +1,17 @@
-/* View: JAR & Class Inspector + Java Source Recovery (built-in JavaScript decompiler) +
- * Driver Exclusion Manager + Eclipse Java project export. */
+/* Page 1: BAR Export. Input: a BAR file (this page only). The BAR is unpacked, its application JARs are decoded
+ * (decompiled) by the built-in JavaScript decompiler, and everything is exported as Toolkit projects for the
+ * ACE 12 Toolkit. The JAR inspection and decoding below is the existing Java source recovery, unchanged. */
 (function (ACE) {
   'use strict';
   var UI = ACE.ui, util = ACE.util, esc = util.esc;
   var openJar = null, openClass = null, projNames = {}, exportedAt = {};
-
   function versions(info) { return Object.keys(info.versions).map(function (v) { return 'Java ' + ACE.java.javaVersionOf(Number(v)) + ' ×' + info.versions[v]; }).join(', ') || '-'; }
   function stage(ok, text) { return '<span class="sev ' + (ok === true ? 'st-pass' : ok === false ? 'st-fail' : 'st-unknown') + '">' + (ok === true ? '✓' : ok === false ? '✗' : '–') + '</span> ' + text; }
-
-  UI.register('decompiler', {
-    render: function (st) {
-      var n = UI.needBar(st); if (n) return '<h1>Java Decompiler</h1>' + n;
-      var ws = st.ws, jars = ws.jars || [];
-      var h = '<h1>Java Source Recovery</h1><p class="lead">JARs found in the BAR are inspected class by class. Eligible application JARs are decompiled into real <code>.java</code> files by the <b>built-in JavaScript decompiler</b>, which runs in this page with no Java, Fernflower or helper program. Each stage is reported separately, and extracting a JAR is <b>not</b> counted as recovering its source. Database drivers are never decompiled by default and are kept as dependencies in <code>Lib/</code>.</p>';
-      if (!jars.length) return h + '<div class="banner">The BAR contains no JAR files.</div>';
+  var V = {};
+  function javaSection(st) {
+    var ws = st.ws, jars = ws.jars || [];
+    var h = '<h2>Java decoding</h2><p class="lead">JARs found in the BAR are inspected class by class. Eligible application JARs are decompiled into real <code>.java</code> files by the <b>built-in JavaScript decompiler</b>, which runs in this page with no Java, Fernflower or helper program. Each stage is reported separately, and extracting a JAR is <b>not</b> counted as recovering its source. Database drivers are never decompiled by default and are kept as dependencies in <code>Lib/</code>.</p>';
+    if (!jars.length) return h + '<div class="banner">The BAR contains no JAR files.</div>';
       h += '<h2>JARs (' + jars.length + ' distinct)</h2><div class="scroll"><table class="grid" id="jarTable"><tr><th>Select</th><th>JAR</th><th>Classification &amp; evidence</th><th>Pipeline stages</th><th>Override</th></tr>';
       jars.forEach(function (j) {
         var d = j.decision, c = j.classification, rec = ws.decompiled[j.sha256];
@@ -36,24 +34,24 @@
       var oj = jars.filter(function (j) { return j.sha256 === openJar; })[0];
       if (oj) h += jarDetail(ws, oj);
       return h;
-    },
-    bind: function (el, st) {
-      if (!st.ws || st.ws.fatal) return;
-      var ws = st.ws, S = ACE.settings.current;
+  }
+  function bindJava(el, st) {
+    if (!(st.ws.jars || []).length) return;
+    var ws = st.ws;
       function rowRec(tr) { var sha = tr.getAttribute('data-sha'); return ws.jars.filter(function (j) { return j.sha256 === sha; })[0]; }
       UI.$$('#jarTable tr[data-sha]', el).forEach(function (tr) {
         var j = rowRec(tr);
         UI.$('.jopen', tr).onclick = function () { openJar = openJar === j.sha256 ? null : j.sha256; openClass = null; UI.refresh(); };
         UI.$('.jinc', tr).onclick = function () {
-          function go() { S.jarOverrides[j.sha256] = 'include'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); }
+          function go() { st.jarOverrides[j.sha256] = 'include'; V.ctl.analyze(); UI.refresh(); }
           if (/driver/.test(j.classification.type)) UI.ask(j.name + ' is classified as a database driver (' + j.classification.driverName + ').\nDrivers are excluded from decompilation by policy.\n\nInclude it anyway?', go, { ok: 'Include' });
           else go();
         };
-        UI.$('.jexc', tr).onclick = function () { S.jarOverrides[j.sha256] = 'exclude'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); };
-        UI.$('.jclr', tr).onclick = function () { delete S.jarOverrides[j.sha256]; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); };
+        UI.$('.jexc', tr).onclick = function () { st.jarOverrides[j.sha256] = 'exclude'; V.ctl.analyze(); UI.refresh(); };
+        UI.$('.jclr', tr).onclick = function () { delete st.jarOverrides[j.sha256]; V.ctl.analyze(); UI.refresh(); };
         UI.$('.jsel', tr).onchange = function (e) {
           var on = e.target.checked;
-          function go() { S.jarOverrides[j.sha256] = on ? 'include' : 'exclude'; ACE.settings.save(); ACE.workflow.analyze(); UI.refresh(); }
+          function go() { st.jarOverrides[j.sha256] = on ? 'include' : 'exclude'; V.ctl.analyze(); UI.refresh(); }
           if (on && /driver/.test(j.classification.type)) { e.target.checked = false; UI.ask('Include database driver ' + j.name + ' for decompilation?', go, { ok: 'Include' }); }
           else go();
         };
@@ -61,13 +59,12 @@
       UI.$('#decRun', el).onclick = function () {
         var sel = ws.jars.filter(function (j) { return j.decision.selected && j.decision.eligible; });
         if (!sel.length) { UI.notify('No JAR is selected for decompilation.'); return; }
-        UI.run('Decompile ' + sel.length + ' JAR(s)', function (cancel, progress) { return ACE.workflow.decompile(sel, cancel, progress, projNames); });
+        UI.run('Decompile ' + sel.length + ' JAR(s)', function (cancel, progress) { return V.ctl.decompile(sel, cancel, progress, projNames); });
       };
       UI.$('#exclDl', el).onclick = function () { util.download(JSON.stringify(ACE.reports.exclusions(ws), null, 2), 'excluded-jars.json', 'application/json'); };
       var oj = ws.jars.filter(function (j) { return j.sha256 === openJar; })[0];
       if (oj) bindDetail(el, ws, oj);
-    }
-  });
+  }
 
   function jarDetail(ws, j) {
     var rec = ws.decompiled[j.sha256], S = ACE.settings.current;
@@ -111,7 +108,31 @@
     };
     UI.$('#srcImp', el).onchange = function (e) {
       var files = Array.prototype.slice.call(e.target.files);
-      UI.run('Import source for ' + j.name, async function () { var r = await ACE.workflow.importSources(j, files); if (!r.accepted) UI.notify('No imported file matched a class of ' + j.name + '.\nRejected: ' + r.rejected.join(', ')); });
+      UI.run('Import source for ' + j.name, async function () { var r = await V.ctl.importSources(j, files); if (!r.accepted) UI.notify('No imported file matched a class of ' + j.name + '.\nRejected: ' + r.rejected.join(', ')); });
     };
   }
+
+  V.input = { title: 'BAR file', hint: 'Read in this browser; nothing is uploaded.', accept: '.bar', kind: 'bar', multiple: false, reject: /\.jar$/i, rejectWhy: 'a JAR is not a BAR' };
+  V.render = function (st) {
+    var ws = st.ws, ver = window.ACE_VERSIONS;
+    var h = '<h1>BAR Export</h1><p class="lead">Takes a BAR file, decodes (decompiles) its application JARs with the built-in Java decompiler, and exports everything as Toolkit source projects for the <b>ACE ' + esc(ver.source) + ' Toolkit</b>: the original source byte-for-byte, the original descriptors, generated (and labelled) <code>.project</code> files and one Eclipse Java project per decoded JAR.</p>';
+    h += UI.inputHtml(V);
+    if (!ws) return h;
+    var apps = ws.model.deployables.filter(function (d) { return d.type === 'application'; }), libs = ws.model.deployables.filter(function (d) { return /library/.test(d.type); });
+    h += '<div class="card"><div class="kv"><div>Applications</div><div>' + (apps.map(function (d) { return esc(d.name); }).join(', ') || 'none') + '</div>' +
+      '<div>Libraries</div><div>' + (libs.map(function (d) { return esc(d.name + ' (' + d.type + ')'); }).join(', ') || 'none') + '</div>' +
+      '<div>Extraction</div><div>' + (ws.complete ? '<span class="st-pass">COMPLETE</span>' : '<span class="st-fail">INCOMPLETE</span>') + ' - ' + ws.files.length + ' files in ' + ws.containers.length + ' containers, ' + util.fmtBytes(ws.totalExtracted) + ' extracted, every entry CRC-32 verified, ' + (ws.jars || []).length + ' distinct JAR(s)</div></div></div>';
+    if (!ws.complete) h += '<div class="banner err">Extraction was incomplete. The package lists the missing files as "missing" in MANIFEST.json.</div>';
+    h += javaSection(st);
+    var undone = (ws.jars || []).filter(function (j) { return j.classification.type === 'application' && !ws.decompiled[j.sha256]; });
+    if (undone.length) h += '<div class="banner warn">' + undone.length + ' application JAR(s) are not decoded yet (' + esc(undone.map(function (j) { return j.name; }).join(', ')) + '). They are exported as binary JARs only. Decode them above if you need their source.</div>';
+    return h + '<h2>Export</h2>' + UI.exportCard(V.ctl, 'ace12');
+  };
+  V.bind = function (el, st) {
+    UI.bindInput(el, V);
+    if (!st.ws) return;
+    bindJava(el, st);
+    UI.bindExport(el, V.ctl, 'ace12');
+  };
+  UI.register('barexport', V);
 })(window.ACE);

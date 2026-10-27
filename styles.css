@@ -114,3 +114,23 @@ details > summary { cursor: pointer; }
 
 /* the hidden attribute must win over component display rules (e.g. .tbadge) */
 [hidden] { display: none !important; }
+
+/* BAR vs source comparison: side-by-side window */
+.cmp-back { align-items: stretch; padding: 18px; }
+.cmp-win { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,.35); width: 100%; max-width: 1700px; margin: 0 auto; display: flex; flex-direction: column; min-height: 0; }
+.cmp-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.cmp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 12px; }
+.cmp-cols > div { padding: 4px 12px; overflow-wrap: anywhere; } .cmp-cols > div + div { border-left: 1px solid var(--line); }
+.cmp-body { flex: 1; overflow: auto; min-height: 0; background: var(--code); }
+table.cmp-tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font: 12px/1.45 var(--mono); }
+table.cmp-tbl col.ln { width: 52px; }
+table.cmp-tbl td { vertical-align: top; padding: 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
+table.cmp-tbl td.ln { color: var(--muted); text-align: right; user-select: none; background: var(--bg); border-right: 1px solid var(--line); padding: 0 6px; }
+table.cmp-tbl td.code.r { border-left: 1px solid var(--line); }
+table.cmp-tbl tr.k-del td.code.l, table.cmp-tbl tr.k-chg td.code.l { background: color-mix(in srgb, var(--err) 15%, transparent); }
+table.cmp-tbl tr.k-add td.code.r, table.cmp-tbl tr.k-chg td.code.r { background: color-mix(in srgb, var(--ok) 17%, transparent); }
+table.cmp-tbl tr.k-del td.code.r, table.cmp-tbl tr.k-add td.code.l { background: color-mix(in srgb, var(--muted) 12%, transparent); }
+table.cmp-tbl mark { background: color-mix(in srgb, var(--err) 40%, transparent); color: inherit; padding: 0; border-radius: 2px; }
+table.cmp-tbl td.code.r mark { background: color-mix(in srgb, var(--ok) 45%, transparent); }
+table.cmp-tbl tr.gap td { background: var(--bg); color: var(--muted); text-align: center; font-family: var(--font); padding: 2px; }
+table.cmp-tbl tr.flash td { outline: 2px solid var(--accent); outline-offset: -2px; }

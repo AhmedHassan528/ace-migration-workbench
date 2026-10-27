@@ -11,27 +11,15 @@
 <body>
 <header class="topbar">
   <div class="brand">IBM ACE Migration Workbench <span class="ver" id="ver"></span></div>
-  <div class="barpick">
-    <label class="btn primary" for="barInput">Open BAR or workspace ZIP…</label>
-    <input type="file" id="barInput" accept=".bar,.zip,.appzip,.libzip" hidden>
-    <span id="barLabel" class="muted">No BAR or workspace ZIP loaded</span>
-  </div>
-  <div class="route">ACE <b id="srcVer"></b> (Java 8) &rarr; ACE <b id="tgtVer"></b> (Java 17)</div>
+  <div class="muted small">Five independent tools. Each page has its own input; nothing is shared between pages.</div>
 </header>
 <div class="layout">
   <nav class="sidenav" id="nav">
-    <a data-view="dashboard">1. Dashboard</a>
-    <a data-view="inspector">2. BAR Inspector</a>
-    <a data-view="extraction">3. Source Extraction</a>
-    <a data-view="decompiler">4. Java Decompiler</a>
-    <a data-view="explorer">5. Project Explorer</a>
-    <a data-view="export12">6. ACE 12 Export</a>
-    <a data-view="migrate13">7. ACE 13 Migration</a>
-    <a data-view="libconv">8. Shared Libraries</a>
-    <a data-view="checks">9. Pre-Migration Checks</a>
-    <a data-view="reports">10. Reports</a>
-    <a data-view="settings">11. Settings</a>
-    <div class="navfoot"><a href="tests/index.html" target="_blank" class="small">Open test suite ↗</a></div>
+    <a data-view="barexport">1. BAR Export</a>
+    <a data-view="migrate13">2. ACE 13 Migration</a>
+    <a data-view="libconv">3. Static to Shared Libraries</a>
+    <a data-view="compare">4. BAR vs Source</a>
+    <a data-view="explorer">5. Source Explorer</a>
   </nav>
   <main id="view" class="view"></main>
 </div>
@@ -48,57 +36,57 @@
 </footer>
 
 <!-- Core -->
-<script src="js/core/util.js?v=20261022b"></script>
-<script src="config/default-config.js?v=20261022b"></script>
-<script src="config/versions.js?v=20261022b"></script>
-<script src="config/driver-signatures.js?v=20261022b"></script>
-<script src="js/core/settings.js?v=20261022b"></script>
+<script src="js/core/util.js?v=20261101"></script>
+<script src="config/default-config.js?v=20261101"></script>
+<script src="config/versions.js?v=20261101"></script>
+<script src="config/driver-signatures.js?v=20261101"></script>
+<script src="js/core/settings.js?v=20261101"></script>
 <!-- Archive engine -->
-<script src="js/archive/crc32.js?v=20261022b"></script>
-<script src="js/archive/zip-reader.js?v=20261022b"></script>
-<script src="js/archive/zip-writer.js?v=20261022b"></script>
-<script src="js/archive/classify.js?v=20261022b"></script>
-<script src="js/archive/bar-engine.js?v=20261022b"></script>
+<script src="js/archive/crc32.js?v=20261101"></script>
+<script src="js/archive/zip-reader.js?v=20261101"></script>
+<script src="js/archive/zip-writer.js?v=20261101"></script>
+<script src="js/archive/classify.js?v=20261101"></script>
+<script src="js/archive/bar-engine.js?v=20261101"></script>
 <!-- Java -->
-<script src="js/java/classfile.js?v=20261022b"></script>
-<script src="js/java/jar-analyzer.js?v=20261022b"></script>
+<script src="js/java/classfile.js?v=20261101"></script>
+<script src="js/java/jar-analyzer.js?v=20261101"></script>
 <!-- Java decompiler (vanilla JavaScript, no external runtime) -->
-<script src="js/decompiler/bytecode.js?v=20261022b"></script>
-<script src="js/decompiler/types.js?v=20261022b"></script>
-<script src="js/decompiler/ir.js?v=20261022b"></script>
-<script src="js/decompiler/translate.js?v=20261022b"></script>
-<script src="js/decompiler/structure.js?v=20261022b"></script>
-<script src="js/decompiler/passes.js?v=20261022b"></script>
-<script src="js/decompiler/syntax-check.js?v=20261022b"></script>
-<script src="js/decompiler/decompiler.js?v=20261022b"></script>
+<script src="js/decompiler/bytecode.js?v=20261101"></script>
+<script src="js/decompiler/types.js?v=20261101"></script>
+<script src="js/decompiler/ir.js?v=20261101"></script>
+<script src="js/decompiler/translate.js?v=20261101"></script>
+<script src="js/decompiler/structure.js?v=20261101"></script>
+<script src="js/decompiler/passes.js?v=20261101"></script>
+<script src="js/decompiler/syntax-check.js?v=20261101"></script>
+<script src="js/decompiler/decompiler.js?v=20261101"></script>
 <!-- Rules -->
-<script src="rules/java8-to-java17.rules.js?v=20261022b"></script>
-<script src="rules/ace12-to-ace13.rules.js?v=20261022b"></script>
+<script src="rules/java8-to-java17.rules.js?v=20261101"></script>
+<script src="rules/ace12-to-ace13.rules.js?v=20261101"></script>
 <!-- Analysis -->
-<script src="js/analysis/msgflow-parser.js?v=20261022b"></script>
-<script src="js/analysis/esql-parser.js?v=20261022b"></script>
-<script src="js/analysis/java17-analyzer.js?v=20261022b"></script>
-<script src="js/analysis/ace-rule-engine.js?v=20261022b"></script>
-<script src="js/analysis/premigration.js?v=20261022b"></script>
-<script src="js/analysis/migration-scanner.js?v=20261022b"></script>
-<!-- Projects, transforms, reports -->
-<script src="js/project/diff.js?v=20261022b"></script>
-<script src="js/project/transforms.js?v=20261022b"></script>
-<script src="js/project/eclipse-project.js?v=20261022b"></script>
-<script src="js/project/explorer-model.js?v=20261022b"></script>
-<script src="js/project/project-builder.js?v=20261022b"></script>
-<script src="js/project/library-conversion.js?v=20261022b"></script>
-<script src="js/project/library-refactor.js?v=20261022b"></script>
-<script src="js/report/reports.js?v=20261022b"></script>
-<script src="js/workflow.js?v=20261022b"></script>
-<!-- UI -->
-<script src="js/ui/ui-core.js?v=20261022b"></script>
-<script src="js/ui/views-inspect.js?v=20261022b"></script>
-<script src="js/ui/views-java.js?v=20261022b"></script>
-<script src="js/ui/views-explorer.js?v=20261022b"></script>
-<script src="js/ui/views-migrate.js?v=20261022b"></script>
-<script src="js/ui/views-libconv.js?v=20261022b"></script>
-<script src="js/ui/views-settings.js?v=20261022b"></script>
-<script src="app.js?v=20261022b"></script>
+<script src="js/analysis/msgflow-parser.js?v=20261101"></script>
+<script src="js/analysis/esql-parser.js?v=20261101"></script>
+<script src="js/analysis/java17-analyzer.js?v=20261101"></script>
+<script src="js/analysis/ace-rule-engine.js?v=20261101"></script>
+<script src="js/analysis/migration-scanner.js?v=20261101"></script>
+<!-- Projects, transforms, library conversion, comparison, reports -->
+<script src="js/project/diff.js?v=20261101"></script>
+<script src="js/project/transforms.js?v=20261101"></script>
+<script src="js/project/eclipse-project.js?v=20261101"></script>
+<script src="js/project/explorer-model.js?v=20261101"></script>
+<script src="js/project/project-builder.js?v=20261101"></script>
+<script src="js/project/library-conversion.js?v=20261101"></script>
+<script src="js/project/library-refactor.js?v=20261101"></script>
+<script src="js/compare/bar-source-compare.js?v=20261101"></script>
+<script src="js/report/reports.js?v=20261101"></script>
+<script src="js/workflow.js?v=20261101"></script>
+<!-- UI: one file per page -->
+<script src="js/ui/ui-core.js?v=20261101"></script>
+<script src="js/ui/export-card.js?v=20261101"></script>
+<script src="js/ui/views-barexport.js?v=20261101"></script>
+<script src="js/ui/views-migrate.js?v=20261101"></script>
+<script src="js/ui/views-libconv.js?v=20261101"></script>
+<script src="js/ui/views-compare.js?v=20261101"></script>
+<script src="js/ui/views-explorer.js?v=20261101"></script>
+<script src="app.js?v=20261101"></script>
 </body>
 </html>

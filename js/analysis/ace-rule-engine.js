@@ -226,7 +226,7 @@
     if (rule.status === 'observed') return { state: 'not-applicable', text: 'Fact observed in the BAR' };
     if (rule.status === 'verified') return { state: 'probe', text: 'Verified by runtime probe (see docs/VERIFIED-FACTS.md); IBM doc references are supporting material' };
     if (rule.status === 'heuristic') return { state: 'heuristic', text: 'Heuristic - not an IBM rule' };
-    if (!docs || !docs.length) return { state: 'unverified', text: 'UNVERIFIED offline: no IBM documentation imported. Reference URLs were consulted online on 2026-10-20.' };
+    if (!docs || !docs.length) return { state: 'unverified', text: 'UNVERIFIED offline: the IBM documentation is not available in this tool. Reference URLs were consulted online on 2026-10-20.' };
     var kws = rule.docKeywords || [];
     if (!kws.length) return { state: 'unverified', text: 'Rule has no documentation keywords to check' };
     var hits = docs.filter(function (d) { var t = d.text.toLowerCase(); return kws.every(function (k) { return t.indexOf(k.toLowerCase()) >= 0; }); });

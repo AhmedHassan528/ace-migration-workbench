@@ -7,7 +7,7 @@
 
   var util = ACE.util = {};
 
-  util.VERSION = '1.0.0';
+  util.VERSION = '2.0.0';
 
   util.fmtBytes = function (n) {
     if (n == null || isNaN(n)) return '-';

@@ -141,6 +141,55 @@
     return out;
   }
   /* Promoted ESQL properties of a subflow and where they are forwarded (attributeLinks). */
+  /* R11 (verified on ACE 13.0.2.0, docs/LIBRARY-CONVERSION.md): a node that WRITES the message tree to a bitstream, with message
+   * validation on, needs the message model of the container it runs in. In a shared library that is the library, which has no model for
+   * an application's messages: BIP5010E + BIP5058E "Validation is enabled but a message model for the shared library 'X' cannot be located".
+   * IBM: validation in a shared library needs "the name of the shared library that contains the appropriate compiled model".
+   * Verified for ResetContentDescriptor (no validation property, so only the container matters) and SOAPReply (also with validation "none"
+   * on the node); the other output nodes have the same validateMaster property and are treated alike. A static library never had the problem
+   * because its nodes ran inside the application. The cure that keeps the static behaviour: the subflow runs in the application (local copy). */
+  var WRITER_NODES = { ResetContentDescriptor: 'no-property', SOAPReply: 1, SOAPRequest: 1, SOAPAsyncRequest: 1, SOAPAsyncResponse: 1, WSReply: 1, WSRequest: 1, MQOutput: 1, MQReply: 1, JMSOutput: 1, JMSReply: 1, FileOutput: 1, TCPIPClientOutput: 1, TCPIPServerOutput: 1, EmailOutput: 1, KafkaProducer: 1, Validate: 1 };
+  var INPUT_NODES = { SOAPInput: true, WSInput: false, MQInput: false, JMSInput: false, FileInput: false, TCPIPServerInput: false, TCPIPClientInput: false, KafkaConsumer: false };   // value = validates by default
+  function allNodes(text) {
+    var ns = {}, m, d = /xmlns:([\w.-]+)="([^"]+)"/g;
+    while ((m = d.exec(text))) ns[m[1]] = m[2];
+    var out = [], re = /<nodes xmi:type="([\w.-]+):FCMComposite_1"([^>]*)>/g;
+    while ((m = re.exec(text))) { var u = ns[m[1]] || ''; out.push({ id: ((/xmi:id="([^"]+)"/.exec(m[2])) || [])[1], attrs: m[2], ns: u, builtin: /\.msgnode$/.test(u) ? u.replace(/^ComIbm/, '').replace(/\.msgnode$/, '') : null, subflow: /\.subflow$/.test(u) ? u : null }); }
+    return out;
+  }
+  function attrOf(attrs, name) { var m = new RegExp('\\s' + name.replace(/\./g, '\\.') + '="([^"]*)"').exec(attrs || ''); return m ? m[1] : null; }
+  /* The promoted properties of a subflow that feed validateMaster of inner nodes: [{prop, nodes, def}] */
+  function validateLinks(text) {
+    var out = [], m, al = /<attributeLinks promotedAttribute="Property\.([\w.]+)" overriddenNodes="([^"]+)">([\s\S]*?)<\/attributeLinks>/g;
+    while ((m = al.exec(text))) {
+      if (!/#Property\.validateMaster"/.test(m[3])) continue;
+      var d = new RegExp('xmi:id="Property\\.' + m[1].replace(/\./g, '\\.') + '"[^>]*?defaultValueLiteral="([^"]*)"').exec(text);
+      out.push({ prop: m[1], nodes: m[2].split(/\s+/), def: d ? d[1] : null });
+    }
+    return out;
+  }
+  /* Does the subflow ns (instance attributes instAttrs, promoted properties applied), or a subflow nested in it, hold a writer node with validation on? */
+  LR.validationBound = function (subs, ns, instAttrs, depth) {
+    var s = subs[ns]; if (!s || (depth || 0) > 12) return null;
+    var nodes = allNodes(s.text), val = {};
+    validateLinks(s.text).forEach(function (l) { var v = attrOf(instAttrs, l.prop); if (v == null) v = l.def; l.nodes.forEach(function (id) { val[id] = v; }); });
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i], v = Object.prototype.hasOwnProperty.call(val, n.id) ? val[n.id] : attrOf(n.attrs, 'validateMaster');
+      if (n.builtin && WRITER_NODES[n.builtin]) {
+        if (WRITER_NODES[n.builtin] === 'no-property' || v !== 'none') return { node: n.builtin, subflow: ns };
+      } else if (n.subflow && subs[n.subflow]) {
+        var inner = n.attrs + (Object.prototype.hasOwnProperty.call(val, n.id) && v != null ? ' validateMaster="' + v + '"' : ''), r = LR.validationBound(subs, n.subflow, inner, (depth || 0) + 1);
+        if (r) return r;
+      }
+    }
+    return null;
+  };
+  /* Does a message flow validate its messages? (its input node: SOAP Input validates by default, the others only when set) */
+  LR.flowValidates = function (text) {
+    return allNodes(text).some(function (n) { if (!n.builtin || !(n.builtin in INPUT_NODES)) return false; var v = attrOf(n.attrs, 'validateMaster'); return v == null ? INPUT_NODES[n.builtin] : v !== 'none'; });
+  };
+
+  LR.subflowNodes = subflowNodes;
   function promoted(text) {
     var props = {}, m, re = /<eStructuralFeatures[^>]*xmi:id="Property\.([\w.]+)"[^>]*>\s*<eType[^>]*href="[^"]*#\/\/EsqlModule"/g;
     while ((m = re.exec(text))) props[m[1]] = { forwards: [] };
@@ -269,6 +318,19 @@
           if (!subByNs[nd.ns]) return;
           var a, re = /(\w+)="esql:\/\/routine\/([\w.]*)#([^"#]+?)\.Main"/g;
           while ((a = re.exec(nd.attrs))) if (!((a[2] + '#' + a[3]) in gModules)) addHook(nd.ns, a[1], { consumer: c.name, file: f.outPath, module: (a[2] ? a[2] + '.' : '') + a[3] });
+        });
+      });
+    });
+    // R11: an application that validates its messages cannot run a node that writes the message inside a shared library (BIP5058E);
+    // such subflows stay local to the application (recorded like a hook, property "validateMaster")
+    consumers.forEach(function (c) {
+      if (c.kind !== 'application' || !c.files.some(function (f) { return /\.msgflow$/i.test(f.rel) && LR.flowValidates(f.text() || ''); })) return;
+      c.files.forEach(function (f) {
+        if (!/\.(msgflow|subflow)$/i.test(f.rel)) return;
+        subflowNodes(f.text() || '').forEach(function (nd) {
+          if (!subByNs[nd.ns]) return;
+          var hit = LR.validationBound(subByNs, nd.ns, nd.attrs, 0);
+          if (hit) addHook(nd.ns, 'validateMaster', { consumer: c.name, file: f.outPath, module: '(message validation: the ' + hit.node + ' node writes the message; a shared library has no message model for it, BIP5058E)' });
         });
       });
     });
@@ -550,6 +612,14 @@
       return false;
     }
     function hasJavaCompute(T) { return /ComIbmJavaCompute\.msgnode:FCMComposite_1"/.test(subs[T].text); }
+    var appValCache = {};
+    function appValidates(C) { if (!(C in appValCache)) appValCache[C] = (P[C].files || []).some(function (f) { return /\.msgflow$/i.test(f.rel) && LR.flowValidates(f.text() || ''); }); return appValCache[C]; }
+    var valWhy = {};   // key C|T -> the writer node that needs the application's message model
+    function validationBoundFor(C, T, instances) {
+      if (!isApp(C) || !appValidates(C)) return false;
+      for (var i = 0; i < instances.length; i++) { var r = LR.validationBound(subs, T, instances[i].attrs, 0); if (r) { if (hasJavaCompute(T)) { (res.warnings = res.warnings || []).push(C + ': subflow ' + T + ' (the ' + r.node + ' node is in ' + r.subflow + ') needs the application message model (BIP5058E when validation is on), but it also contains a JavaCompute node whose Java classes an application cannot load from a shared library. Check it by hand.'); return false; } valWhy[C + '|' + T] = r; return true; } }
+      return false;
+    }
     /* Rewrite a flow/subflow text that belongs to container C (its own file or a local copy).
      * inLocal: the text is a local copy in an application. Its nested subflows are copied too (Toolkit 13.0.2.0:
      * an application subflow with promoted properties that nests shared-library subflows fails validation,
@@ -562,7 +632,7 @@
       Object.keys(bySub).forEach(function (T) {
         var s = subs[T];
         if (s.owner === C) { map[T] = s.newNs; return; }
-        var local = !isApp(C) || bySub[T].some(function (nd) { return hookedFor(T, nd.attrs); }) || (inLocal && !hasJavaCompute(T));
+        var local = !isApp(C) || bySub[T].some(function (nd) { return hookedFor(T, nd.attrs); }) || (inLocal && !hasJavaCompute(T)) || validationBoundFor(C, T, bySub[T]);
         if (local) map[T] = localize(C, T);
         else { map[T] = s.newNs; needRef(C, s.owner); }
       });
@@ -578,7 +648,7 @@
       var key = C + '|' + T; if (localOf[key]) return localOf[key];
       var ns = localNsFor(C, T); localOf[key] = ns;
       var r = processFlow(C, subs[T].text, ns, isApp(C));
-      created.push({ path: C + '/' + ns, project: C, text: r.text, note: 'local copy of ' + subs[T].owner + '/' + subs[T].rel + (isApp(C) ? ' (receives application ESQL modules - not possible inside a shared library, BIP4127E - or is nested in such a copy)' : ' (a shared library cannot use a subflow of another shared library, BIP1360E)') });
+      created.push({ path: C + '/' + ns, project: C, text: r.text, note: 'local copy of ' + subs[T].owner + '/' + subs[T].rel + (isApp(C) ? (valWhy[C + '|' + T] ? ' (contains a ' + valWhy[C + '|' + T].node + ' node that writes the message while validation is on; a shared library has no message model for the application messages: BIP5058E. The copy runs in the application, like a static library did)' : ' (receives application ESQL modules - not possible inside a shared library, BIP4127E - or is nested in such a copy)') : ' (a shared library cannot use a subflow of another shared library, BIP1360E)') });
       return ns;
     }
     /* ESQL text of container C: qualify calls to other libraries' routines; collect constants to copy. */
