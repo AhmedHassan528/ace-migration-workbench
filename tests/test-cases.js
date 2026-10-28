@@ -849,8 +849,12 @@
       a.ok(codes(ws).indexOf('RF-LIB-CALLS-APP') >= 0, 'library calling an application routine blocks');
       ws = await rfLoad(Fx.frameworkSpec(function (s) { s[0].files['Main.msgflow'] = Fx.flowXml('Main.msgflow', {}); return s; }));
       a.ok(codes(ws).indexOf('RF-MSGFLOW') >= 0, 'message flow inside a library blocks');
+      ws = await rfLoad(Fx.frameworkSpec(function (s) { s[1].refs = s[1].refs.concat(['PrimeLib']); return s; }));
+      a.ok(codes(ws).indexOf('RF-MISSING-PROJECT') >= 0 && plan13(ws).edits.length === 0, 'a library that has to convert references a project that is not in the input: blocks the whole run');
       ws = await rfLoad(Fx.frameworkSpec(function (s) { s[2].refs = s[2].refs.concat(['PrimeLib']); return s; }));
-      a.ok(codes(ws).indexOf('RF-MISSING-PROJECT') >= 0 && plan13(ws).edits.length === 0, 'missing referenced project blocks the whole run');
+      a.ok(plan13(ws).blockedCount === 0 && plan13(ws).edits.length > 0 && plan13(ws).warnings.some(function (w) { return /PrimeLib/.test(w) && /STATIC/.test(w); }), 'an application that uses a library outside the input does not block: PrimeLib is assumed static and stays as it is (warning)');
+      ws = await rfLoad(Fx.frameworkSpec(function (s) { s[2].refs = s[2].refs.concat(['PrimeLib']); return s; }), { knownStaticLibraries: ['PrimeLib'] });
+      a.ok(plan13(ws).blockedCount === 0 && !plan13(ws).warnings.some(function (w) { return /PrimeLib/.test(w); }), 'listed under "Static libraries not in the input": no warning');
     });
   });
   test('R06', 'Single library keeps its name: refactor reduces to the minimal change when nothing needs to move', { category: 'Library conversion (refactor)' }, async function (a) {
@@ -861,7 +865,7 @@
       a.eq(e, 'App1/application.descriptor,Lib1/.project', 'only the shared nature and the descriptor reference change (same as the type-change strategy)');
     });
   });
-  test('R07', 'Real workspace ZIP(s): refactor plan; ContentCreate converts, valleysoft is blocked by its missing PrimeLib', { category: 'Library conversion (refactor)', requires: 'workspace' }, async function (a, env) {
+  test('R07', 'Real workspace ZIP(s): refactor plan; ContentCreate converts; valleysoft converts and reports its PrimeLib (not in the input)', { category: 'Library conversion (refactor)', requires: 'workspace' }, async function (a, env) {
     var files = env.workspaceFiles && env.workspaceFiles.length ? env.workspaceFiles : [env.workspaceFile];
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
@@ -873,7 +877,7 @@
           var run = ACE.workflow.convertLibraries();
           a.ok(run.targets[0].validation.passed, 'ContentCreate: validation ' + run.targets[0].validation.checks.map(function (c) { return c.id + ' ' + c.status; }).join(', '));
         } else if (/valleysoft/i.test(f.name)) {
-          a.ok(p.libraries.some(function (l) { return l.blockers.some(function (b) { return b.code === 'RF-MISSING-PROJECT' && /PrimeLib/.test(b.detail); }); }), 'valleysoft: blocked until PrimeLib is part of the input');
+          a.ok(p.blockedCount === 0 && p.warnings.some(function (w) { return /PrimeLib/.test(w) && /STATIC/.test(w); }), 'valleysoft: converts; PrimeLib (not in the input) is assumed static and reported, not a blocker');
         } else a.ok(true, 'analysed');
       });
     }
@@ -1014,6 +1018,68 @@
       var ws = await sepLoad([{ name: 'FwV', kind: 'static', files: jfiles }, { name: 'AppS', kind: 'app', refs: ['FwV'], files: app }]), p = plan13(ws);
       a.ok(!cur(ws, 'AppS/AppS/local/FwV/Jv.subflow'), 'the Java-compute subflow is not copied into the application');
       a.ok((p.warnings || []).some(function (w) { return /Jv\.subflow|fv\/Jv/.test(w) && /JavaCompute/.test(w) && /BIP5058E/.test(w); }), 'a subflow that needs the model but holds a JavaCompute node is not moved; a warning says so');
+    });
+  });
+
+  /* Which libraries convert: connected libraries convert together (Toolkit: a static library cannot reference a shared one, a shared one cannot reference a static one) */
+  function groupSpec() { return Fx.frameworkSpec(function (s) { s.push({ name: 'Solo', kind: 'static', files: { 'Solo.esql': 'CREATE PROCEDURE SoloP() BEGIN END;\n' } }); s[2].refs = s[2].refs.concat(['Solo']); return s; }); }
+  async function groupLoad(libraries) { ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, SEP, libraries ? { libraries: libraries } : {}); return load(await Fx.libWorkspace(groupSpec()), 'grp.zip'); }
+  test('G01', 'Partial conversion: an unconnected static library stays static and the application keeps referencing it; connected libraries convert together with the reason', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC(SEP, async function () {
+      var ws = await groupLoad(['AuditL', 'FwL']), p = plan13(ws), dec = {};
+      p.libraries.forEach(function (l) { dec[l.name] = l.decision; });
+      a.eq(JSON.stringify(dec), JSON.stringify({ AuditL: 'convert', FwL: 'convert', Solo: 'not-selected' }), 'AuditL and FwL convert; Solo (not connected to them) stays static: ' + JSON.stringify(dec));
+      a.ok(p.libraries.filter(function (l) { return l.name === 'Solo'; })[0].reasons.join(' ').indexOf('stays a static library') >= 0, 'the table says why Solo stays static');
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(v.passed, 'validation passes: ' + v.checks.filter(function (c) { return c.status === 'FAIL'; }).map(function (c) { return c.id + ' ' + c.problems.slice(0, 1).join(''); }).join('; '));
+      a.ok(!cur(ws, 'Solo/.project') && !cur(ws, 'Solo/Solo.esql'), 'the static library Solo is not touched');
+      var ap = cur(ws, 'App/.project') || '', refs = ACE.libconv.descriptorRefs(cur(ws, 'App/application.descriptor'));
+      a.ok(/<project>Solo<\/project>/.test(ap) || !ap, 'the application still references Solo (project reference unchanged)');
+      a.eq(refs.sort().join(','), 'AuditL,FwL', 'the application descriptor lists only the shared libraries');
+      a.ok(!/sharedLibraryNature/.test(ACE.workflow.state.ws.files.filter(function (f) { return /Solo\/\.project$/.test(f.path); }).map(function (f) { return ACE.bar.text(f); }).join('')), 'Solo has no shared nature');
+      ACE.workflow.undoLibraryConversion();
+      // all static libraries
+      ws = await groupLoad(null); p = plan13(ws);
+      a.ok(p.libraries.every(function (l) { return l.decision === 'convert'; }), 'with "all static libraries" Solo converts as well');
+    });
+  });
+  test('G02', 'Partial conversion: a library left static but connected to a converted one is explained and blocks until you decide', { category: 'Library conversion (separate)' }, async function (a) {
+    await withLC(SEP, async function () {
+      var ws = await groupLoad(['AuditL']), p = plan13(ws), fl = p.libraries.filter(function (l) { return l.name === 'FwL'; })[0];
+      a.ok(p.blockedCount > 0 && p.edits.length === 0, 'nothing is changed');
+      a.ok(fl.blockers.some(function (b) { return b.code === 'RF-STATIC-CONFLICT' && /FwL cannot stay static/.test(b.detail) && /static library cannot reference a shared library/.test(b.detail); }), 'FwL cannot stay static: ' + (fl.blockers[0] && fl.blockers[0].detail));
+      a.eq(p.target.forced.join(','), 'FwL', 'the plan names the libraries that must convert too');
+      // ticking them resolves it
+      ws = await groupLoad(['AuditL'].concat(p.target.forced)); p = plan13(ws);
+      a.ok(p.blockedCount === 0 && p.converted.join(',') === 'AuditL,FwL', 'with them ticked the conversion is planned: ' + p.converted.join(','));
+      // the merge strategy applies the same rule
+      ACE.settings.current.libraryConversion = Object.assign({}, ACE.libconv.DEFAULTS, RF, { libraries: ['AuditL'] });
+      ws = await load(await Fx.libWorkspace(groupSpec()), 'grpm.zip'); p = plan13(ws);
+      a.ok(p.blockedCount > 0 && p.target.forced.join(',') === 'FwL', 'merge strategy: same conflict');
+    });
+  });
+  test('G03', 'Validation: a subflow with a JavaCompute node that reaches a node writing the message stays shared; that node gets validation switched off in the library copy', { category: 'Library conversion (separate)' }, async function (a) {
+    function build(inner) {
+      var U = function (p, n) { return { prefix: p, ns: n }; }, files = {};
+      files['fv/Rep.subflow'] = Fx.flowXml('fv/Rep.subflow', { uses: [U('ComIbmSOAPReply.msgnode', 'ComIbmSOAPReply.msgnode'), U('ComIbmResetContentDescriptor.msgnode', 'ComIbmResetContentDescriptor.msgnode')], nodes: [{ type: inner + '.msgnode', attrs: {} }] });
+      files['fv/Jv.subflow'] = Fx.flowXml('fv/Jv.subflow', { uses: [U('ComIbmJavaCompute.msgnode', 'ComIbmJavaCompute.msgnode'), U('Rep.subflow', 'fv/Rep.subflow')], nodes: [{ type: 'ComIbmJavaCompute.msgnode', attrs: { javaClass: 'p.Load' } }, { type: 'Rep.subflow', attrs: {} }] });
+      var app = {}; app['AppS.msgflow'] = Fx.flowXml('AppS.msgflow', { uses: [U('ComIbmSOAPInput.msgnode', 'ComIbmSOAPInput.msgnode'), U('Jv.subflow', 'fv/Jv.subflow')], nodes: [{ type: 'ComIbmSOAPInput.msgnode', attrs: {} }, { type: 'Jv.subflow', attrs: {} }] });
+      return [{ name: 'FwV', kind: 'static', files: files }, { name: 'AppS', kind: 'app', refs: ['FwV'], files: app }];
+    }
+    await withLC(SEP, async function () {
+      var ws = await sepLoad(build('ComIbmSOAPReply')), p = plan13(ws);
+      a.ok(!cur(ws, 'AppS/AppS/local/FwV/Jv.subflow'), 'the Java subflow is not copied into the application');
+      a.ok(p.notes.some(function (n) { return /Validation switched off/.test(n) && /Rep\.subflow/.test(n); }), 'a note says which nodes were switched off and why');
+      var run = ACE.workflow.convertLibraries(), v = run.targets[0].validation;
+      a.ok(/<nodes xmi:type="ComIbmSOAPReply.msgnode:FCMComposite_1"[^>]*validateMaster="none"/.test(cur(ws, 'FwV/fv/Rep.subflow') || ''), 'the SOAP Reply node in the library copy has validateMaster="none"');
+      a.ok(v.passed && v.checks.filter(function (c) { return c.id === 'V13'; })[0].status === 'PASS' && !v.checks.some(function (c) { return c.id === 'V13b'; }), 'V13 passes and nothing is left to check by hand');
+      ACE.workflow.undoLibraryConversion();
+      // a node without a validation property (Reset Content Descriptor) cannot be switched off: reported
+      ws = await sepLoad(build('ComIbmResetContentDescriptor')); p = plan13(ws);
+      a.ok(p.warnings.some(function (w) { return /ResetContentDescriptor/.test(w) && /JavaCompute/.test(w) && /BIP5058E/.test(w); }), 'Reset Content Descriptor next to a JavaCompute node: warning, check by hand');
+      run = ACE.workflow.convertLibraries();
+      a.ok(run.targets[0].validation.checks.some(function (c) { return c.id === 'V13b' && c.status === 'WARN'; }), 'and validation shows warning V13b');
+      ACE.workflow.undoLibraryConversion();
     });
   });
   test('S03', 'Real workspace ZIP(s): the separate strategy keeps all library names; ContentCreate converts and validates', { category: 'Library conversion (separate)', requires: 'workspace' }, async function (a, env) {

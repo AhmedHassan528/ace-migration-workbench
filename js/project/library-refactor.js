@@ -36,10 +36,11 @@
     'RF-NAME-CONFLICT': 'Two libraries of the group define the same ESQL routine/module/subflow in the default schema; after merging they would collide.',
     'RF-LIB-CALLS-APP': 'Library ESQL calls a routine that only an application defines; a shared library cannot see application code.',
     'RF-CONSTANT-USE': 'An application uses a schema-level CONSTANT/SHARED/EXTERNAL variable of the library; it cannot be referenced across schemas (BIP2432E verified).',
-    'RF-MISSING-PROJECT': 'A project referenced by the input is missing; it may depend on the libraries and could not be converted with them.',
+    'RF-MISSING-PROJECT': 'A library that has to be converted references a project that is not in the input; it would have to be converted with them (add its ZIP, or name it under "Known shared libraries" if it is already shared).',
     'RF-INTEGRATION-PROJECT': 'An integration project references a library of the group; integration projects cannot reference shared libraries.',
     'RF-SCHEMA-TAKEN': 'The target broker schema is already used by ESQL or subflows elsewhere in the input.',
     'RF-NAME-TAKEN': 'The target shared library name is already used by another project in the input.',
+    'RF-STATIC-CONFLICT': 'A library you want to keep static is connected to a library you convert. ACE does not allow a static library to reference a shared library (Toolkit: "Static library X can not reference shared library Y") or a shared library to reference a static one, so connected libraries convert together (verified, docs/LIBRARY-CONVERSION.md R12).',
     'RF-BAR-INPUT': 'Refactoring needs a Toolkit workspace ZIP (original project files); BAR input is analysed only.'
   };
 
@@ -184,6 +185,33 @@
     }
     return null;
   };
+  /* R11b: a subflow that must stay in the shared library (it holds a JavaCompute node, whose classes an application cannot load) but reaches a node that
+   * writes the message: the node's validation is switched off (validateMaster = none; verified on ACE 13.0.2.0: the reply is sent, no BIP5058E).
+   * ResetContentDescriptor has no validation property and cannot be changed this way (reported). */
+  LR.disableWriterValidation = function (text) {
+    var out = text, patched = [], unpatchable = [], links = validateLinks(text), promotedFor = {};
+    links.forEach(function (l) { l.nodes.forEach(function (id) { promotedFor[id] = l; }); });
+    allNodes(text).forEach(function (n) {
+      if (!n.builtin || !WRITER_NODES[n.builtin]) return;
+      if (WRITER_NODES[n.builtin] === 'no-property') { unpatchable.push(n.builtin); return; }
+      var idq = n.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (promotedFor[n.id]) {
+        var pq = promotedFor[n.id].prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        var tre = new RegExp('<eStructuralFeatures[^>]*xmi:id="Property\\.' + pq + '"[^>]*>'), tm = tre.exec(out);
+        if (tm) {
+          var tag = tm[0], nt = /\sdefaultValueLiteral="[^"]*"/.test(tag) ? tag.replace(/\sdefaultValueLiteral="[^"]*"/, ' defaultValueLiteral="none"') : tag.replace(/\s*(\/?)>$/, ' defaultValueLiteral="none"$1>');
+          out = out.slice(0, tm.index) + nt + out.slice(tm.index + tag.length);
+          patched.push(n.builtin + ' (promoted property ' + promotedFor[n.id].prop + ' default set to none)');
+        }
+        return;
+      }
+      if (attrOf(n.attrs, 'validateMaster') === 'none') return;
+      var er = new RegExp('(<nodes xmi:type="[^"]*" xmi:id="' + idq + '")([^>]*)>');
+      out = out.replace(er, function (a, head, rest) { rest = /\svalidateMaster="[^"]*"/.test(rest) ? rest.replace(/\svalidateMaster="[^"]*"/, ' validateMaster="none"') : rest + ' validateMaster="none"'; return head + rest + '>'; });
+      patched.push(n.builtin);
+    });
+    return { text: out, patched: patched, unpatchable: unpatchable };
+  };
   /* Does a message flow validate its messages? (its input node: SOAP Input validates by default, the others only when set) */
   LR.flowValidates = function (text) {
     return allNodes(text).some(function (n) { if (!n.builtin || !(n.builtin in INPUT_NODES)) return false; var v = attrOf(n.attrs, 'validateMaster'); return v == null ? INPUT_NODES[n.builtin] : v !== 'none'; });
@@ -202,6 +230,40 @@
     return props;
   }
 
+  /* The libraries that convert together (verified with the Toolkit build, docs/LIBRARY-CONVERSION.md R12): a shared library can reference only
+   * shared libraries, and a static library cannot reference a shared one ("Static library 'X' can not reference shared library 'Y'"). So a
+   * converted library pulls in the static libraries it references AND the static libraries that reference it. A static library that is not connected
+   * to a converted one is not touched. why[n] says why each library is in the group; forced = libraries the user did not select but that must convert. */
+  LR.libraryGroup = function (st, cfg) {
+    var P = st.byName, referencedBy = {}, G = {}, why = {};
+    var statics = st.projects.filter(function (p) { return p.kind === 'static-library'; }).map(function (p) { return p.name; });
+    var explicit = !(cfg.libraries === 'auto' || !cfg.libraries);
+    var sel = explicit ? cfg.libraries.filter(function (n) { return statics.indexOf(n) >= 0; }) : statics.slice();
+    st.projects.forEach(function (p) { p.refs.forEach(function (r) { (referencedBy[r] = referencedBy[r] || []).push(p.name); }); });
+    sel.forEach(function (n) { G[n] = true; why[n] = 'selected'; });
+    var grown = true;
+    while (grown) {
+      grown = false;
+      Object.keys(G).forEach(function (n) {
+        P[n].refs.forEach(function (r) { if (P[r] && P[r].kind === 'static-library' && !G[r]) { G[r] = true; why[r] = n + ' references it, and a shared library can reference only shared libraries'; grown = true; } });
+        (referencedBy[n] || []).forEach(function (u) { if (P[u] && P[u].kind === 'static-library' && !G[u]) { G[u] = true; why[u] = 'it references ' + n + ', and a static library cannot reference a shared library'; grown = true; } });
+      });
+    }
+    return { statics: statics, sel: sel, G: G, group: Object.keys(G).sort(), why: why, explicit: explicit, forced: explicit ? Object.keys(G).filter(function (n) { return sel.indexOf(n) < 0; }).sort() : [] };
+  };
+  /* References to projects that are not in the input: a blocker only when a library that must convert needs it; otherwise it is assumed to be a static library that stays as it is. */
+  LR.checkMissing = function (st, cfg, G, known, res, block) {
+    var P = st.byName, ks = {}; (cfg.knownStaticLibraries || []).forEach(function (n) { if (n) ks[n] = true; });
+    var group = Object.keys(G).sort();
+    st.projects.forEach(function (p) {
+      p.refs.forEach(function (r) {
+        if (P[r] || known[r] || ks[r]) return;
+        if (G[p.name]) block('RF-MISSING-PROJECT', p.name + ' references "' + r + '"', [{ file: p.dot.path }]);
+        else res.warnings.push(p.name + ' references "' + r + '", which is not in the input. It is assumed to be a STATIC library that stays as it is (list it under "Static libraries not in the input" to silence this). If it is a shared library, list it under "Known shared libraries". If it uses ' + group.join(', ') + ', it must be converted with them (a static library cannot reference a shared library): add its ZIP to the input.');
+      });
+    });
+  };
+
   /* ---------- plan ---------- */
   LR.analyze = function (ws, cfg, copy) {
     var LC = ACE.libconv, st = LC.state(ws, copy), P = st.byName, res = LC.emptyResult(copy), known = {};
@@ -210,28 +272,24 @@
     res.projects = st.projects.map(function (p) { return { name: p.name, kind: p.kind, references: p.refs.map(function (r) { return { project: r, kind: P[r] ? P[r].kind : known[r] ? 'shared-library (known)' : 'missing' }; }), referencedBy: [], metadata: p.dot.generated ? 'generated (BAR input)' : 'original' }; });
     if (ws.inputKind !== 'workspace') { res.errors.push(LR.RULES['RF-BAR-INPUT']); return finish(); }
     // group = closure as in LC (selected static libraries + dependency rules)
-    var statics = st.projects.filter(function (p) { return p.kind === 'static-library'; }).map(function (p) { return p.name; });
-    var sel = cfg.libraries === 'auto' || !cfg.libraries ? statics.slice() : cfg.libraries.filter(function (n) { return statics.indexOf(n) >= 0; });
-    var G = {}, referencedBy = {};
+    var grp = LR.libraryGroup(st, cfg), G = grp.G, why = grp.why, referencedBy = {};
     st.projects.forEach(function (p) { p.refs.forEach(function (r) { (referencedBy[r] = referencedBy[r] || []).push(p.name); }); });
-    sel.forEach(function (n) { G[n] = true; });
-    var grown = true;
-    while (grown) { grown = false; Object.keys(G).forEach(function (n) { P[n].refs.concat(referencedBy[n] || []).forEach(function (r) { if (P[r] && P[r].kind === 'static-library' && !G[r]) { G[r] = true; grown = true; } }); }); }
-    var group = Object.keys(G).sort();
+    var group = grp.group;
     var already = st.projects.filter(function (p) { return p.kind === 'shared-library'; }).map(function (p) { return p.name; });
     if (!group.length) { res.notes.push('No static library to convert.'); return finish(); }
     var N = (cfg.sharedLibraryName || '').trim() || (group.length === 1 ? group[0] : 'SharedFramework');
     var S = (cfg.schema || '').trim() || N.toLowerCase().replace(/[^a-z0-9_]/g, '');
     var SL = S + '.local', SP = S.replace(/\./g, '/'), SLP = SL.replace(/\./g, '/');
-    res.target = { sharedLibrary: N, schema: S, localSchema: SL, group: group };
+    res.target = { sharedLibrary: N, schema: S, localSchema: SL, group: group, forced: grp.forced };
     var blockers = [];
     function block(code, detail, where) { blockers.push({ code: code, rule: LR.RULES[code], detail: detail, locations: where || [] }); }
+    grp.forced.forEach(function (n) { block('RF-STATIC-CONFLICT', n + ' cannot stay static: ' + why[n]); });
     if (!/^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$/.test(S)) block('RF-SCHEMA-TAKEN', 'schema "' + S + '" is not a valid broker schema name');
     if (P[N] && !G[N]) block('RF-NAME-TAKEN', N);
 
     // file inventory of the group
     var consumers = st.projects.filter(function (p) { return !G[p.name]; });
-    st.projects.forEach(function (p) { p.refs.forEach(function (r) { if (!P[r] && !known[r]) block('RF-MISSING-PROJECT', p.name + ' references "' + r + '"', [{ file: p.dot.path }]); }); });
+    LR.checkMissing(st, cfg, G, known, res, block);
     consumers.forEach(function (c) { if (c.kind === 'integration-project' && c.refs.some(function (r) { return G[r]; })) block('RF-INTEGRATION-PROJECT', c.name, [{ file: c.dot.path }]); });
     var esqlG = [], subG = [], otherG = {}, symbolsByFile = {};
     group.forEach(function (n) {
@@ -368,7 +426,7 @@
       if (p.kind === 'shared-library') { rec.decision = 'already-shared'; rec.reasons.push('already a shared library'); }
       else if (!G[p.name]) { rec.decision = 'not-selected'; rec.reasons.push('not selected'); }
       else if (blocked) { rec.decision = 'blocked'; rec.blockers = blockers.map(function (b) { return { code: b.code, rule: b.rule, detail: b.detail, basis: 'refactoring', evidence: b.rule, docs: DOCS, locations: b.locations }; }); res.blockedCount++; }
-      else { rec.decision = 'convert'; rec.reasons.push(group.length > 1 ? 'merged into shared library ' + N + ' (schema ' + S + ')' : 'becomes shared library ' + N + ' (schema ' + S + ')'); }
+      else { rec.decision = 'convert'; rec.reasons.push(group.length > 1 ? 'merged into shared library ' + N + ' (schema ' + S + ')' : 'becomes shared library ' + N + ' (schema ' + S + ')'); if (why[p.name] && why[p.name] !== 'selected') rec.reasons.push('required: ' + why[p.name]); }
       res.libraries.push(rec);
     });
     if (blocked) { res.manualActions.push('Resolve the blocking items listed for the libraries, then analyse again. Nothing was changed.'); return finish(); }
@@ -550,22 +608,18 @@
     var already = st.projects.filter(function (p) { return p.kind === 'shared-library'; }).map(function (p) { return p.name; });
     function finish(target) { res.build = LC.buildPlan(LC.state(ws, copy), res, (function () { var o = {}; already.concat(res.converted || []).forEach(function (n) { o[n] = true; }); Object.keys(known).forEach(function (n) { o[n] = true; }); return o; })(), target || null); return res; }
     if (ws.inputKind !== 'workspace') { res.errors.push(LR.RULES['RF-BAR-INPUT']); return finish(); }
-    var statics = st.projects.filter(function (p) { return p.kind === 'static-library'; }).map(function (p) { return p.name; });
-    var sel = cfg.libraries === 'auto' || !cfg.libraries ? statics.slice() : cfg.libraries.filter(function (n) { return statics.indexOf(n) >= 0; });
-    var G = {}, referencedBy = {};
+    var grp = LR.libraryGroup(st, cfg), G = grp.G, why = grp.why, referencedBy = {};
     st.projects.forEach(function (p) { p.refs.forEach(function (r) { (referencedBy[r] = referencedBy[r] || []).push(p.name); }); });
-    sel.forEach(function (n) { G[n] = true; });
-    var grown = true;
-    while (grown) { grown = false; Object.keys(G).forEach(function (n) { P[n].refs.concat(referencedBy[n] || []).forEach(function (r) { if (P[r] && P[r].kind === 'static-library' && !G[r]) { G[r] = true; grown = true; } }); }); }
-    var group = Object.keys(G).sort();
+    var group = grp.group;
     if (!group.length) { res.notes.push('No static library to convert.'); return finish(); }
     function schemaOf(L) { return L; }
     function pathOf(sch) { return sch.replace(/\./g, '/'); }
-    res.target = { group: group, schemas: group.map(function (L) { return L + ' -> schema ' + schemaOf(L); }) };
+    res.target = { group: group, forced: grp.forced, schemas: group.map(function (L) { return L + ' -> schema ' + schemaOf(L); }) };
     var blockers = [];
     function block(code, detail, where) { blockers.push({ code: code, rule: LR.RULES[code] || code, detail: detail, locations: where || [] }); }
+    grp.forced.forEach(function (n) { block('RF-STATIC-CONFLICT', n + ' cannot stay static: ' + why[n]); });
     var consumers = st.projects.filter(function (p) { return !G[p.name]; });
-    st.projects.forEach(function (p) { p.refs.forEach(function (r) { if (!P[r] && !known[r]) block('RF-MISSING-PROJECT', p.name + ' references "' + r + '"', [{ file: p.dot.path }]); }); });
+    LR.checkMissing(st, cfg, G, known, res, block);
     consumers.forEach(function (c) { if (c.kind === 'integration-project' && c.refs.some(function (r) { return G[r]; })) block('RF-INTEGRATION-PROJECT', c.name, [{ file: c.dot.path }]); });
     group.forEach(function (L) { if (!/^[A-Za-z_]\w*$/.test(L)) block('RF-SCHEMA-TAKEN', 'library name "' + L + '" cannot be used as a broker schema name'); });
 
@@ -617,7 +671,7 @@
     var valWhy = {};   // key C|T -> the writer node that needs the application's message model
     function validationBoundFor(C, T, instances) {
       if (!isApp(C) || !appValidates(C)) return false;
-      for (var i = 0; i < instances.length; i++) { var r = LR.validationBound(subs, T, instances[i].attrs, 0); if (r) { if (hasJavaCompute(T)) { (res.warnings = res.warnings || []).push(C + ': subflow ' + T + ' (the ' + r.node + ' node is in ' + r.subflow + ') needs the application message model (BIP5058E when validation is on), but it also contains a JavaCompute node whose Java classes an application cannot load from a shared library. Check it by hand.'); return false; } valWhy[C + '|' + T] = r; return true; } }
+      for (var i = 0; i < instances.length; i++) { var r = LR.validationBound(subs, T, instances[i].attrs, 0); if (r) { if (hasJavaCompute(T)) return false; valWhy[C + '|' + T] = r; return true; } }
       return false;
     }
     /* Rewrite a flow/subflow text that belongs to container C (its own file or a local copy).
@@ -648,6 +702,7 @@
       var key = C + '|' + T; if (localOf[key]) return localOf[key];
       var ns = localNsFor(C, T); localOf[key] = ns;
       var r = processFlow(C, subs[T].text, ns, isApp(C));
+      if (!isApp(C)) r.text = patchWriters(T, r.text, C + '/' + ns);
       created.push({ path: C + '/' + ns, project: C, text: r.text, note: 'local copy of ' + subs[T].owner + '/' + subs[T].rel + (isApp(C) ? (valWhy[C + '|' + T] ? ' (contains a ' + valWhy[C + '|' + T].node + ' node that writes the message while validation is on; a shared library has no message model for the application messages: BIP5058E. The copy runs in the application, like a static library did)' : ' (receives application ESQL modules - not possible inside a shared library, BIP4127E - or is nested in such a copy)') : ' (a shared library cannot use a subflow of another shared library, BIP1360E)') });
       return ns;
     }
@@ -669,6 +724,26 @@
       return { text: out, notes: sites.length ? [sites.length + ' call(s) schema-qualified: ' + util.uniq(sites.map(function (s2) { return s2.name; })).join(', ')] : [] };
     }
 
+    // R11b: subflows that must stay shared (they hold a JavaCompute node) but reach a node that writes the message while the application validates:
+    // switch validation off on those nodes in the library's own copies (the Java classes cannot move into the application)
+    var patchSet = {}, patchLog = {}, unpatched = {};
+    function markJava(ns, seen) { if (!subs[ns] || seen[ns]) return; seen[ns] = true; patchSet[ns] = true; allNodes(subs[ns].text).forEach(function (n) { if (n.subflow) markJava(n.subflow, seen); }); }
+    function walkBound(ns, attrs, depth) {
+      if (depth > 12 || !subs[ns] || !LR.validationBound(subs, ns, attrs, 0)) return;
+      if (hasJavaCompute(ns)) { markJava(ns, {}); return; }
+      allNodes(subs[ns].text).forEach(function (n) { if (n.subflow && subs[n.subflow]) walkBound(n.subflow, n.attrs, depth + 1); });
+    }
+    consumers.forEach(function (c) {
+      if (c.kind !== 'application' || !appValidates(c.name)) return;
+      c.files.forEach(function (f) { if (/\.(msgflow|subflow)$/i.test(f.rel)) subflowNodes(f.text() || '').forEach(function (nd) { if (subs[nd.ns]) walkBound(nd.ns, nd.attrs, 0); }); });
+    });
+    function patchWriters(ns, text, where) {
+      if (!patchSet[ns]) return text;
+      var r = LR.disableWriterValidation(text);
+      if (r.patched.length) (patchLog[ns] = patchLog[ns] || []).push(where + ': ' + r.patched.join(', '));
+      r.unpatchable.forEach(function (n) { unpatched[ns + '|' + n] = true; });
+      return r.text;
+    }
     // libraries
     group.forEach(function (L) {
       P[L].files.forEach(function (f) {
@@ -682,6 +757,7 @@
           else if (after !== e.text) edits.push({ path: f.outPath, project: L, before: e.text, after: after, created: false, deleted: false, notes: r.notes });
         } else if (/\.subflow$/i.test(f.rel)) {
           var s = subs[nsOf(f.text() || '') || f.rel], r2 = processFlow(L, s.text, s.newNs);
+          r2.text = patchWriters(s.oldNs, r2.text, L + '/' + s.dest);
           if (s.dest !== s.rel) { edits.push({ path: L + '/' + s.dest, project: L, before: '', after: r2.text, created: true, deleted: false, notes: ['moved into broker schema ' + schemaOf(L)].concat(r2.notes) }); edits.push({ path: f.outPath, project: L, before: s.text, after: null, created: false, deleted: true, notes: ['moved to ' + L + '/' + s.dest] }); }
           else if (r2.text !== s.text) edits.push({ path: f.outPath, project: L, before: s.text, after: r2.text, created: false, deleted: false, notes: r2.notes });
         }
@@ -697,6 +773,8 @@
       });
     });
     created.forEach(function (x) { edits.push({ path: x.path, project: x.project, before: '', after: x.text, created: true, deleted: false, notes: [x.note] }); });
+    Object.keys(patchLog).forEach(function (ns) { res.notes.push('Validation switched off on the node(s) that write the message in the shared subflow copies of ' + ns + ' (it is part of a subflow that holds a JavaCompute node, which cannot move into the application because an application cannot load a shared library\'s Java classes; a shared library has no message model for the application, BIP5058E): ' + patchLog[ns].join('; ') + '. Messages are still validated everywhere else.'); });
+    Object.keys(unpatched).forEach(function (k) { var p = k.split('|'); res.warnings.push('Subflow ' + p[0] + ' holds a JavaCompute node and a ' + p[1] + ' node that writes the message; the ' + p[1] + ' node has no validation setting, so BIP5058E cannot be avoided when the application validates and that path runs. Check it by hand.'); });
     // constants copies
     Object.keys(constCopies).forEach(function (C) {
       var used = Object.keys(constCopies[C]).sort(), byOwner = {};
@@ -719,9 +797,9 @@
     st.projects.filter(function (p) { return /library/.test(p.kind); }).forEach(function (p) {
       var rec = { name: p.name, currentType: p.kind, decision: null, reasons: [], blockers: [], referencingApplications: (referencedBy[p.name] || []).filter(function (u) { return P[u] && P[u].kind === 'application'; }), referencingLibraries: (referencedBy[p.name] || []).filter(function (u) { return P[u] && P[u].kind !== 'application'; }), usage: [], dependsOn: p.refs.map(function (r) { return { project: r, kind: P[r] ? P[r].kind : 'missing' }; }) };
       if (p.kind === 'shared-library') { rec.decision = 'already-shared'; rec.reasons.push('already a shared library'); }
-      else if (!G[p.name]) { rec.decision = 'not-selected'; rec.reasons.push('not selected'); }
+      else if (!G[p.name]) { rec.decision = 'not-selected'; rec.reasons.push('stays a static library: not selected, and not connected to a library that is converted'); }
       else if (blocked) { rec.decision = 'blocked'; rec.blockers = blockers.map(function (b) { return { code: b.code, rule: b.rule, detail: b.detail, basis: 'refactoring', evidence: b.rule, docs: DOCS, locations: b.locations }; }); res.blockedCount++; }
-      else { rec.decision = 'convert'; rec.reasons.push('stays "' + p.name + '" - becomes a shared library (schema ' + schemaOf(p.name) + ')'); }
+      else { rec.decision = 'convert'; rec.reasons.push('stays "' + p.name + '" - becomes a shared library (schema ' + schemaOf(p.name) + ')'); if (why[p.name] && why[p.name] !== 'selected') rec.reasons.push('required: ' + why[p.name]); }
       res.libraries.push(rec);
     });
     if (blocked) { res.edits = []; res.manualActions.push('Resolve the blocking items listed for the libraries, then analyse again. Nothing was changed.'); return finish(); }

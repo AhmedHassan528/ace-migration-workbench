@@ -29,7 +29,7 @@
   };
   var BASE_NS = 'http://com.ibm.etools.mft.descriptor.base';
   LC.KIND = 'library-conversion';
-  LC.DEFAULTS = { enabled: false, targets: ['ace13'], strategy: 'separate', sharedLibraryName: '', schema: '', libraries: 'auto', knownSharedLibraries: [], validateAfterConversion: true };
+  LC.DEFAULTS = { enabled: false, targets: ['ace13'], strategy: 'separate', sharedLibraryName: '', schema: '', libraries: 'auto', knownSharedLibraries: [], knownStaticLibraries: [], validateAfterConversion: true };
 
   /* Evidence behind each rule. basis: verified (probe on ACE 13.0.2.0), documented (IBM docs), toolkit (Toolkit builder rule text). */
   var DOC12 = 'https://www.ibm.com/docs/en/SSTTDS_12.0/com.ibm.etools.mft.doc/bc23067_.html', DOC13 = 'https://www.ibm.com/docs/en/SSTTDS_13.0/com.ibm.etools.mft.doc/bc23067_.html';

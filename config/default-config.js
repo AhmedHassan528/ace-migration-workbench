@@ -23,5 +23,5 @@ window.ACE_DEFAULT_CONFIG = {
   // strategy: "separate" (default: each library keeps its name and becomes a shared library; ESQL/subflows move into a
   // schema named after the library; nested/hooked subflows are copied where ACE requires it), "refactor" (merge the
   // libraries into one shared library) or "in-place" (type change only, for libraries that are already valid).
-  libraryConversion: { enabled: false, targets: ["ace13"], strategy: "separate", sharedLibraryName: "", schema: "", libraries: "auto", knownSharedLibraries: [], validateAfterConversion: true },
+  libraryConversion: { enabled: false, targets: ["ace13"], strategy: "separate", sharedLibraryName: "", schema: "", libraries: "auto", knownSharedLibraries: [], knownStaticLibraries: [], validateAfterConversion: true },
 };

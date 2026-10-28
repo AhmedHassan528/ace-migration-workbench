@@ -23,9 +23,10 @@
         '<label class="inline"><input type="radio" name="lcStrat" value="in-place"' + (c.strategy === 'in-place' ? ' checked' : '') + '> <b>Type change only</b>: for libraries that are already valid shared libraries</label></div>' +
       '<label>Merge: shared library name</label><div><input type="text" id="lcName" placeholder="Merge strategy only - default: SharedFramework" value="' + esc(c.sharedLibraryName || '') + '"><div class="small muted">Use the same settings for every service so they all use the same shared libraries.</div></div>' +
       '<label>Merge: broker schema</label><div><input type="text" id="lcSchema" placeholder="Merge strategy only - default: the library name in lower case" value="' + esc(c.schema || '') + '"></div>' +
-      '<label>Libraries to convert</label><div><label class="inline"><input type="radio" name="lcSel" value="auto"' + (auto ? ' checked' : '') + '> all static libraries</label> <label class="inline"><input type="radio" name="lcSel" value="pick"' + (auto ? '' : ' checked') + '> only these:</label> ' +
+      '<label>Libraries to convert</label><div><label class="inline"><input type="radio" name="lcSel" value="auto"' + (auto ? ' checked' : '') + '> all static libraries</label> <label class="inline"><input type="radio" name="lcSel" value="pick"' + (auto ? '' : ' checked') + '> only these (connected libraries must convert together, see the plan):</label> ' +
         (statics.length ? statics.map(function (n) { return '<label class="inline"><input type="checkbox" class="lcLib" value="' + esc(n) + '"' + (!auto && (c.libraries || []).indexOf(n) >= 0 ? ' checked' : '') + '> ' + esc(n) + '</label>'; }).join(' ') : '<span class="muted">(open a workspace ZIP or BAR to list its static libraries)</span>') + '</div>' +
       '<label>Known shared libraries</label><div><input type="text" class="wide" id="lcKnown" placeholder="names, comma separated" value="' + esc((c.knownSharedLibraries || []).join(', ')) + '"><div class="small muted">Libraries that are already shared libraries but are not in this input (e.g. converted earlier for another service).</div></div>' +
+      '<label>Static libraries not in the input</label><div><input type="text" class="wide" id="lcKnownStatic" placeholder="names, comma separated" value="' + esc((c.knownStaticLibraries || []).join(', ')) + '"><div class="small muted">Libraries that stay static and are not part of this input. An application that uses them keeps referencing them. They must not use a library that is converted: a static library cannot reference a shared one.</div></div>' +
       '<label>Validate after conversion</label><label class="inline"><input type="checkbox" id="lcVal"' + (c.validateAfterConversion ? ' checked' : '') + '> run the structural validation (build commands are listed; they cannot run in a browser)</label>' +
       '<label>Original source</label><div>always preserved: changes go to the working copy; originals are exported under <code>_original-before-changes/</code>; Undo restores them</div>' +
       '</div><div class="row"><button class="btn primary" id="lcSave">Save and analyse</button></div></div>';
@@ -92,6 +93,8 @@
       if (!plan) return h + '<div class="banner">Press <b>Save and analyse</b>.</div>';
       var todo = plan.targets.reduce(function (a, t) { return a + t.plan.edits.length; }, 0), blocked = plan.targets.reduce(function (a, t) { return a + t.plan.blockedCount; }, 0), errs = plan.targets.reduce(function (a, t) { return a + t.plan.errors.length; }, 0);
       h += '<div class="row"><button class="btn primary" id="lcRun"' + (todo && !errs ? '' : ' disabled') + '>Convert…</button> <button class="btn" id="lcUndo"' + (ws.libConversionRun || hasConversion(ws) ? '' : ' disabled') + '>Undo conversion</button> <button class="btn" id="lcMd">Download report (Markdown)</button> <button class="btn" id="lcJson">Download report (JSON)</button> <span class="small muted">' + (todo ? todo + ' file change(s) planned' : 'nothing to change') + (blocked ? ', ' + blocked + ' library(ies) cannot be converted' : '') + '</span></div>';
+      var forced = plan.targets[0].plan.target && plan.targets[0].plan.target.forced || [];
+      if (forced.length) h += '<div class="banner err"><b>Libraries you left static must convert too:</b> ' + forced.map(esc).join(', ') + '.<br><span class="small">ACE does not allow a static library to reference a shared library (the Toolkit reports "Static library X can not reference shared library Y"), or a shared library to reference a static one, so connected libraries convert together. The reasons are in the table below. Either convert them too, or do not convert the library they are connected to.</span><div class="row"><button class="btn primary" id="lcAddForced">Convert them too</button></div></div>';
       if (ws.libConversionRun) {
         // download the converted source right here (same package as the ACE 12 / ACE 13 export views)
         h += '<div class="card banner ok"><b>Conversion applied.</b> Download the converted projects (Toolkit workspace ZIP: shared library, updated applications, originals under <code>_original-before-changes/</code>, reports under <code>_workbench/</code>):<div class="row">' +
@@ -111,6 +114,7 @@
         c.targets = [UI.$('#lcT12', el).checked ? 'ace12' : null, UI.$('#lcT13', el).checked ? 'ace13' : null].filter(Boolean);
         c.libraries = !pick || pick.value === 'auto' ? 'auto' : UI.$$('.lcLib', el).filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
         c.knownSharedLibraries = UI.$('#lcKnown', el).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+        c.knownStaticLibraries = UI.$('#lcKnownStatic', el).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
         c.validateAfterConversion = UI.$('#lcVal', el).checked;
         var strat = UI.$$('input[name=lcStrat]', el).filter(function (r) { return r.checked; })[0];
         c.strategy = strat ? strat.value : 'separate'; c.strategyVersion = 2;
@@ -123,6 +127,10 @@
       UI.$$('.lcMore', el).forEach(function (b) { b.onclick = function () { var k = b.getAttribute('data-k'); open[k] = !open[k]; UI.refresh(); }; });
       if (!st.ws) return;
       var ws = st.ws;
+      var af = UI.$('#lcAddForced', el); if (af) af.onclick = function () {
+        var plan0 = ws.libConversion.targets[0].plan, now = (c.libraries === 'auto' || !c.libraries) ? [] : c.libraries.slice();
+        c.libraries = util.uniq(now.concat(plan0.target.forced)); V.ctl.analyze(); UI.refresh();
+      };
       var run = UI.$('#lcRun', el); if (run) run.onclick = function () {
         var p = ws.libConversion, libs = util.uniq([].concat.apply([], p.targets.map(function (t) { return t.plan.converted; }))), files = p.targets.reduce(function (a, t) { return a + t.plan.edits.length; }, 0);
         var tp = p.targets[0].plan, what = tp.target && tp.target.sharedLibrary ? 'Merge ' + libs.join(', ') + ' into shared library ' + tp.target.sharedLibrary + ' (schema ' + tp.target.schema + ') and update every reference' : 'Convert ' + libs.length + ' library(ies) to shared libraries: ' + libs.join(', ');
