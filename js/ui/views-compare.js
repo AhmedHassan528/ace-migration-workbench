@@ -5,7 +5,8 @@
   var UI = ACE.ui, util = ACE.util, esc = util.esc, C = ACE.cmp;
   var PAGE = 200;
   var S = { bar: null, srcZip: null, srcFiles: null, srcLabel: '', opt: { ignoreFramework: true, ignoreWhitespace: true, frameworkPatterns: '' }, result: null, page: 0,
-    f: { q: '', status: 'diff', severity: '', type: '', app: '' }, err: null };
+    f: { q: '', status: 'diff', severity: '', type: '', app: '' }, err: null,
+    libs: [], libResult: null, lf: { q: '', status: 'diff', severity: '', lib: '' }, libPage: 0 };
   var SEV_CLS = { critical: 'sev-Error', difference: 'sev-Warning', warning: 'st-info', ok: 'st-pass' };
   var STATUS_HELP = {
     'missing-in-bar': 'A file of the source (the master) that is not in the BAR',
@@ -27,6 +28,83 @@
       if (q && (x.app + '/' + x.path).toLowerCase().indexOf(q) < 0) return false;
       return true;
     });
+  }
+
+  /* ---------- static libraries: their own input list, filter, summary and tables (separate from the application result) ---------- */
+  function libListHtml() {
+    if (!S.libs.length) return '';
+    return '<div class="small" style="margin-top:4px">' + S.libs.map(function (l, i) { return esc(l.label) + ' <span class="muted">(' + l.count + ')</span> <a class="cmpLibDel" data-i="' + i + '" style="cursor:pointer">remove</a>'; }).join('<br>') + '</div>';
+  }
+  function libFiltered() {
+    var r = S.libResult, f = S.lf, q = f.q.trim().toLowerCase();
+    return r.files.filter(function (x) {
+      if (f.status === 'diff' ? x.status === 'identical' : f.status && x.status !== f.status) return false;
+      if (f.severity && x.severity !== f.severity) return false;
+      if (f.lib && x.lib !== f.lib) return false;
+      if (q && (x.lib + '/' + x.path).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+  function libSummaryHtml(r) {
+    var s = r.summary, st = s.byStatus;
+    function card(n, l, cls) { return '<div class="stat"><div class="n ' + (cls || '') + '">' + n + '</div><div class="l">' + l + '</div></div>'; }
+    var h = s.critical ? '<div class="banner err"><b>' + s.critical + ' critical issue(s) in the static libraries:</b> ' + (st['missing-in-bar'] || 0) + ' source file(s) missing in the BAR library' + (s.libraries.error ? ', ' + s.libraries.error + ' library archive(s) unreadable' : '') + '.</div>' : '<div class="banner ok"><b>No critical differences</b> in the ' + s.libraries.compared + ' compared static librar' + (s.libraries.compared === 1 ? 'y' : 'ies') + '.</div>';
+    h += '<div class="cards">' + card(s.libraries.compared, 'static libraries compared (matched by name)') + card(s.files, 'files compared (message flows, subflows, ESQL)') + card(st.identical || 0, 'identical', 'st-pass') + card(st.modified || 0, 'modified', 'sev-Warning') + card(st['missing-in-bar'] || 0, 'missing in the BAR library - critical', 'sev-Error') + card(st['extra-in-bar'] || 0, 'extra in the BAR library - warning', 'st-info') + card(s.libraries.noSource, 'BAR libraries without a source') + card(s.libraries.notInBar, 'provided libraries not in the BAR') + '</div>';
+    h += '<p class="small muted">Only message flows, subflows and ESQL were scanned. ' + s.jarsNotOpened + ' JAR file(s) (in the BAR libraries and in the library sources) were not opened or read. ' + s.elapsedMs + ' ms.</p>';
+    return h;
+  }
+  function libsTable(r) {
+    var rows = r.libraries.map(function (l) {
+      var c = l.counts || {}, n = l.status === 'compared', where = (l.copies || []).map(function (x) { return x.app || '(BAR root)'; });
+      var stt = n ? 'compared' : l.status === 'no-source' ? '<span class="st-info">BAR library without a source</span>' : l.status === 'not-in-bar' ? '<span class="st-info">not in the BAR</span>' : '<span class="st-fail">error</span>';
+      return '<tr><td><a class="cmpLib" data-lib="' + esc(l.name) + '" style="cursor:pointer">' + esc(l.name) + '</a>' + (l.variant ? ' <span class="muted">(version ' + l.variant + ')</span>' : '') + '</td><td>' + stt + '</td><td class="small">' + esc(where.join(', ') || '-') + '</td><td class="small">' + esc(l.source || '-') + '</td>' +
+        (n ? '<td class="num">' + (c.identical || 0) + '</td><td class="num">' + (c.modified || 0) + '</td><td class="num">' + (c['missing-in-bar'] || 0) + '</td><td class="num">' + (c['extra-in-bar'] || 0) + '</td>' : '<td colspan="4" class="small muted">' + esc(l.note || '') + '</td>') + '<td>' + sevBadge(l.severity) + '</td></tr>';
+    }).join('');
+    return '<div class="scroll" style="max-height:34vh"><table class="grid"><tr><th>Library</th><th>Match</th><th>Used by (applications)</th><th>Source</th><th class="num">Identical</th><th class="num">Modified</th><th class="num">Missing in BAR</th><th class="num">Extra in BAR</th><th>Result</th></tr>' + rows + '</table></div>';
+  }
+  function libFilesTable() {
+    var r = S.libResult, list = libFiltered(), pages = Math.max(1, Math.ceil(list.length / PAGE));
+    if (S.libPage >= pages) S.libPage = pages - 1;
+    var from = S.libPage * PAGE, rows = list.slice(from, from + PAGE).map(function (x) {
+      var btn = x.status === 'identical' || x.status === 'not-comparable' && x.srcText == null ? '' : '<button class="btn small cmpLibView" data-id="' + x.id + '">' + (x.status === 'modified' ? 'View differences' : 'View file') + '</button>';
+      return '<tr><td>' + esc(x.lib) + (x.variant ? ' <span class="muted small">v' + x.variant + '</span>' : '') + '</td><td><code>' + esc(x.path) + '</code>' + (x.note ? '<div class="small muted">' + esc(x.note) + '</div>' : '') + '</td><td>' + esc(x.type) + '</td><td>' + esc(x.srcStatus) + '</td><td>' + esc(x.barStatus) + '</td><td title="' + esc(STATUS_HELP[x.status] || '') + '">' + esc(C.STATUS[x.status]) + '</td><td>' + sevBadge(x.severity) + '</td><td class="small">' + esc(x.summary || '') + '</td><td>' + btn + '</td></tr>';
+    }).join('');
+    var h = '<div class="row small" style="margin:6px 0">' + list.length + ' of ' + r.files.length + ' file(s)' + (pages > 1 ? ' &nbsp; <button class="btn small" id="cmpLibPrev"' + (S.libPage ? '' : ' disabled') + '>&laquo;</button> page ' + (S.libPage + 1) + ' / ' + pages + ' <button class="btn small" id="cmpLibNext"' + (S.libPage < pages - 1 ? '' : ' disabled') + '>&raquo;</button>' : '') + '</div>';
+    return h + '<div class="scroll" style="max-height:60vh"><table class="grid"><tr><th>Library</th><th>File</th><th>Type</th><th>Source</th><th>BAR</th><th>Status</th><th>Severity</th><th>Differences</th><th></th></tr>' + (rows || '<tr><td colspan="9" class="muted">Nothing matches the filter.</td></tr>') + '</table></div>';
+  }
+  function libResultHtml() {
+    var r = S.libResult, libsWith = r.libraries.filter(function (l) { return l.status === 'compared' && (l.counts.modified || l.counts['missing-in-bar'] || l.counts['extra-in-bar']); }).map(function (l) { return l.name; });
+    function opt(v, l, cur) { return '<option value="' + esc(v) + '"' + (cur === v ? ' selected' : '') + '>' + esc(l) + '</option>'; }
+    var h = '<hr><h1>Static libraries</h1><p class="lead">The static libraries inside the BAR compared with the library sources you provided. This result is separate from the application comparison above.</p>' + libSummaryHtml(r);
+    if (r.notes.length || r.warnings.length) h += '<div class="banner warn small">' + r.notes.concat(r.warnings).map(esc).join('<br>') + '</div>';
+    h += '<h2>Libraries</h2>' + libsTable(r);
+    h += '<h2>Library files</h2><div class="row" style="gap:8px;flex-wrap:wrap"><input type="search" id="cmpLibQ" placeholder="Filter by library or file name" value="' + esc(S.lf.q) + '" style="min-width:240px">' +
+      '<select id="cmpLibFStatus">' + opt('diff', 'All differences', S.lf.status) + opt('', 'Everything (incl. identical)', S.lf.status) + Object.keys(C.STATUS).map(function (k) { return opt(k, C.STATUS[k], S.lf.status); }).join('') + '</select>' +
+      '<select id="cmpLibFSev">' + opt('', 'Any severity', S.lf.severity) + Object.keys(C.SEVERITY).map(function (k) { return opt(k, C.SEVERITY[k], S.lf.severity); }).join('') + '</select>' +
+      '<select id="cmpLibFLib">' + opt('', 'All libraries', S.lf.lib) + libsWith.map(function (n) { return opt(n, n, S.lf.lib); }).join('') + '</select>' +
+      '<button class="btn small" id="cmpLibCsv">Export CSV</button><button class="btn small" id="cmpLibJson">Export JSON</button></div>';
+    return h + '<div id="cmpLibFiles">' + libFilesTable() + '</div>';
+  }
+  function bindLibs(el) {
+    function reset() { S.libResult = null; S.err = null; UI.refresh(); }
+    var dir = UI.$('#cmpLibDir', el), zp = UI.$('#cmpLibZip', el);
+    dir.onchange = function (e) { var fl = Array.prototype.slice.call(e.target.files || []); e.target.value = ''; if (fl.length) { S.libs.push({ label: 'folder ' + ((fl[0].webkitRelativePath || '').split('/')[0] || ''), files: fl, count: fl.length + ' files' }); reset(); } };
+    zp.onchange = function (e) { var fl = Array.prototype.slice.call(e.target.files || []); e.target.value = ''; if (fl.length) { fl.forEach(function (f) { S.libs.push({ label: f.name, zip: f, count: util.fmtBytes(f.size) }); }); reset(); } };
+    UI.$$('.cmpLibDel', el).forEach(function (a) { a.onclick = function () { S.libs.splice(Number(a.getAttribute('data-i')), 1); reset(); }; });
+    var clr = UI.$('#cmpLibClear', el); if (clr) clr.onclick = function () { S.libs = []; reset(); };
+    if (!S.libResult) return;
+    function table() { var box = UI.$('#cmpLibFiles', el); box.innerHTML = libFilesTable(); bindT(box); }
+    function bindT(box) {
+      UI.$$('.cmpLibView', box).forEach(function (b) { b.onclick = function () { var id = Number(b.getAttribute('data-id')), f = S.libResult.files.filter(function (x) { return x.id === id; })[0]; if (f) openDetailFile(f, S.libResult.options.ignoreWhitespace, f.lib + (f.variant ? ' (version ' + f.variant + ')' : '') + ' - used by ' + f.apps.join(', ')); }; });
+      var p = UI.$('#cmpLibPrev', box), n = UI.$('#cmpLibNext', box);
+      if (p) p.onclick = function () { S.libPage--; table(); }; if (n) n.onclick = function () { S.libPage++; table(); };
+    }
+    bindT(el);
+    var q = UI.$('#cmpLibQ', el), t0 = null; q.oninput = function () { clearTimeout(t0); t0 = setTimeout(function () { S.lf.q = q.value; S.libPage = 0; table(); }, 150); };
+    [['#cmpLibFStatus', 'status'], ['#cmpLibFSev', 'severity'], ['#cmpLibFLib', 'lib']].forEach(function (m) { UI.$(m[0], el).onchange = function (e) { S.lf[m[1]] = e.target.value; S.libPage = 0; table(); }; });
+    UI.$$('.cmpLib', el).forEach(function (a) { a.onclick = function () { S.lf.lib = a.getAttribute('data-lib'); S.lf.status = 'diff'; S.libPage = 0; UI.$('#cmpLibFLib', el).value = S.lf.lib; UI.$('#cmpLibFStatus', el).value = 'diff'; table(); UI.$('#cmpLibFiles', el).scrollIntoView(); }; });
+    UI.$('#cmpLibCsv', el).onclick = function () { util.download('\uFEFF' + C.reportLibrariesCsv(S.libResult), 'bar-static-libraries-vs-source.csv', 'text/csv'); };
+    UI.$('#cmpLibJson', el).onclick = function () { util.download(C.reportLibrariesJson(S.libResult), 'bar-static-libraries-vs-source.json', 'application/json'); };
   }
 
   function summaryHtml(r) {
@@ -102,42 +180,52 @@
           '<span class="muted">' + esc(barLabel()) + '</span></div>' +
         '<label>Source code</label><div><label class="btn" for="cmpZipIn">Choose ZIP…</label><input type="file" id="cmpZipIn" accept=".zip" hidden> <label class="btn" for="cmpDirIn">Choose folder…</label><input type="file" id="cmpDirIn" webkitdirectory multiple hidden> <span class="muted">' + esc(srcLabel()) + '</span>' +
           '<div class="small muted">A Toolkit workspace ZIP, or a workspace folder from the file explorer. Projects are found by their .project files.</div></div>' +
+        '<label>Static libraries</label><div><label class="btn" for="cmpLibDir">Add library folder…</label><input type="file" id="cmpLibDir" webkitdirectory multiple hidden> <label class="btn" for="cmpLibZip">Add library ZIP(s)…</label><input type="file" id="cmpLibZip" accept=".zip" multiple hidden>' + (S.libs.length ? ' <button class="btn small" id="cmpLibClear">Remove all</button>' : '') + libListHtml() +
+          '<div class="small muted">Optional. One folder or ZIP per static library (the source of that library); add as many as you need. Each is compared with the static library of the same name inside the BAR: only message flows, subflows and ESQL are scanned, and JAR files are never opened. With libraries and no application source, only the libraries are compared.</div></div>' +
         '<label>Framework</label><label class="inline"><input type="checkbox" id="cmpFw"' + (S.opt.ignoreFramework ? ' checked' : '') + '> ignore additional framework ESQL files inside the BAR applications</label>' +
         '<label>Ignore names</label><div><input type="text" class="wide" id="cmpPat" placeholder="optional: file-name patterns to ignore, e.g. Common*.esql, *_Lib.esql" value="' + esc(S.opt.frameworkPatterns) + '"></div>' +
         '<label>Whitespace</label><label class="inline"><input type="checkbox" id="cmpWs"' + (S.opt.ignoreWhitespace ? ' checked' : '') + '> ignore differences in line endings, BOM and trailing blanks</label>' +
-        '</div><div class="row"><button class="btn primary" id="cmpRun"' + (S.bar && (S.srcZip || S.srcFiles) ? '' : ' disabled') + '>Compare</button></div>' +
+        '</div><div class="row"><button class="btn primary" id="cmpRun"' + (S.bar && (S.srcZip || S.srcFiles || S.libs.length) ? '' : ' disabled') + '>Compare</button></div>' +
         (S.err ? '<div class="banner err">' + esc(S.err) + '</div>' : '') + '</div>';
       h += '<details class="small"><summary>How the result is classified</summary><ul>' +
         '<li><b>Missing in BAR</b> (critical): a file of the source that is not in the BAR.</li>' +
         '<li><b>Modified WSDL / XSD</b> (critical). Modified ESQL, message flow or subflow: <b>Difference</b>.</li>' +
         '<li><b>Extra in BAR</b> (warning, not critical): a file in the BAR that the source does not have. Framework ESQL files are ignored.</li>' +
-        '<li>Files are paired by path; a file in another folder is paired by its unique name and says so. A source flow for which the BAR only has a compiled <code>.cmf</code> is "not comparable".</li></ul></details>';
+        '<li><b>Static libraries</b> (separate result): the same rules for message flows, subflows and ESQL; WSDL/XSD and JAR files are not scanned. The same library in several applications is compared once.</li><li>Files are paired by path; a file in another folder is paired by its unique name and says so. A source flow for which the BAR only has a compiled <code>.cmf</code> is "not comparable".</li></ul></details>';
       if (S.result) h += resultHtml();
+      if (S.libResult) h += libResultHtml();
       return h;
     },
     bind: function (el, st) {
       function again() { UI.refresh(); }
-      UI.$('#cmpBarIn', el).onchange = function (e) { if (e.target.files[0]) { S.bar = e.target.files[0]; S.result = null; S.err = null; again(); } };
-      UI.$('#cmpZipIn', el).onchange = function (e) { if (e.target.files[0]) { S.srcZip = e.target.files[0]; S.srcFiles = null; S.result = null; S.err = null; again(); } };
+      UI.$('#cmpBarIn', el).onchange = function (e) { if (e.target.files[0]) { S.bar = e.target.files[0]; S.result = null; S.libResult = null; S.err = null; again(); } };
+      UI.$('#cmpZipIn', el).onchange = function (e) { if (e.target.files[0]) { S.srcZip = e.target.files[0]; S.srcFiles = null; S.result = null; S.libResult = null; S.err = null; again(); } };
       UI.$('#cmpDirIn', el).onchange = function (e) {
         var fl = Array.prototype.slice.call(e.target.files || []);
-        if (fl.length) { S.srcFiles = fl; S.srcZip = null; S.srcLabel = 'folder ' + ((fl[0].webkitRelativePath || '').split('/')[0] || '') + ' (' + fl.length + ' files)'; S.result = null; S.err = null; again(); }
+        if (fl.length) { S.srcFiles = fl; S.srcZip = null; S.srcLabel = 'folder ' + ((fl[0].webkitRelativePath || '').split('/')[0] || '') + ' (' + fl.length + ' files)'; S.result = null; S.libResult = null; S.err = null; again(); }
       };
       UI.$('#cmpFw', el).onchange = function (e) { S.opt.ignoreFramework = e.target.checked; };
       UI.$('#cmpWs', el).onchange = function (e) { S.opt.ignoreWhitespace = e.target.checked; };
       UI.$('#cmpPat', el).onchange = function (e) { S.opt.frameworkPatterns = e.target.value; };
       UI.$('#cmpRun', el).onclick = function () {
-        S.opt.frameworkPatterns = UI.$('#cmpPat', el).value; S.err = null;
+        S.opt.frameworkPatterns = UI.$('#cmpPat', el).value; S.err = null; S.result = null; S.libResult = null;
         UI.run('Compare BAR with source', async function (cancel, progress) {
           try {
-            var source = await C.readSource(S.srcZip ? { zip: S.srcZip } : { files: S.srcFiles }, { cancel: cancel, progress: progress });
+            var hasApp = !!(S.srcZip || S.srcFiles), source = hasApp ? await C.readSource(S.srcZip ? { zip: S.srcZip } : { files: S.srcFiles }, { cancel: cancel, progress: progress }) : null;
             var bar = await C.readBar(S.bar, { cancel: cancel, progress: progress });
-            S.result = await C.compare(source, bar, S.opt, { cancel: cancel, progress: progress });
+            if (hasApp) S.result = await C.compare(source, bar, S.opt, { cancel: cancel, progress: progress });
             S.page = 0; S.f = { q: '', status: 'diff', severity: '', type: '', app: '' };
-            ACE.log[S.result.summary.critical ? 'warn' : 'ok']('BAR vs source: ' + S.result.summary.applications.compared + ' application(s), ' + S.result.summary.files + ' file(s), ' + S.result.summary.critical + ' critical issue(s)');
+            if (S.result) ACE.log[S.result.summary.critical ? 'warn' : 'ok']('BAR vs source: ' + S.result.summary.applications.compared + ' application(s), ' + S.result.summary.files + ' file(s), ' + S.result.summary.critical + ' critical issue(s)');
+            if (S.libs.length) {
+              var ls = await C.readLibrarySources(S.libs.map(function (l) { return l.zip ? { label: l.label, zip: l.zip } : { label: l.label, files: l.files }; }), { cancel: cancel, progress: progress });
+              S.libResult = await C.compareLibraries(ls, bar, S.opt, { cancel: cancel, progress: progress });
+              S.libPage = 0; S.lf = { q: '', status: 'diff', severity: '', lib: '' };
+              ACE.log[S.libResult.summary.critical ? 'warn' : 'ok']('BAR static libraries vs source: ' + S.libResult.summary.libraries.compared + ' librar' + (S.libResult.summary.libraries.compared === 1 ? 'y' : 'ies') + ', ' + S.libResult.summary.files + ' file(s), ' + S.libResult.summary.critical + ' critical issue(s)');
+            }
           } catch (e) { if (util.isCancel(e)) throw e; S.err = 'The comparison failed: ' + e.message; ACE.log.error(S.err, e.stack); }
         });
       };
+      bindLibs(el);
       if (!S.result) return;
       function table() { var box = UI.$('#cmpFiles', el); box.innerHTML = filesTable(); bindTable(box); }
       function bindTable(box) {
@@ -160,14 +248,14 @@
     if (!mark || mark[0] >= mark[1]) return esc(text);
     return esc(text.slice(0, mark[0])) + '<mark>' + esc(text.slice(mark[0], mark[1])) + '</mark>' + esc(text.slice(mark[1]));
   }
-  function openDetail(id) {
-    var f = S.result.files.filter(function (x) { return x.id === id; })[0]; if (!f) return;
+  function openDetail(id) { var f = S.result.files.filter(function (x) { return x.id === id; })[0]; if (f) openDetailFile(f, S.result.options.ignoreWhitespace, f.app); }
+  function openDetailFile(f, ignoreWs, owner) {
     var old = document.getElementById('cmpDetail'); if (old) old.remove();
-    var rows = C.sideBySide(f.srcText || '', f.barText || '', S.result.options.ignoreWhitespace), ctx = 5, cur = -1, MAXROWS = 8000;
+    var rows = C.sideBySide(f.srcText || '', f.barText || '', ignoreWs), ctx = 5, cur = -1, MAXROWS = 8000;
     var back = document.createElement('div'); back.id = 'cmpDetail'; back.className = 'dlg-back cmp-back';
     var chg = rows.filter(function (r) { return r.kind !== 'eq'; }).length;
     back.innerHTML = '<div class="cmp-win" role="dialog" aria-modal="true">' +
-      '<div class="cmp-head"><div><b>' + esc(f.app) + ' / ' + esc(f.path) + '</b> &nbsp; ' + esc(f.type) + ' &nbsp; ' + sevBadge(f.severity) + ' <span class="small muted">' + esc(C.STATUS[f.status]) + ' - ' + esc(f.summary || '') + '</span></div>' +
+      '<div class="cmp-head"><div><b>' + esc(owner) + ' / ' + esc(f.path) + '</b> &nbsp; ' + esc(f.type) + ' &nbsp; ' + sevBadge(f.severity) + ' <span class="small muted">' + esc(C.STATUS[f.status]) + ' - ' + esc(f.summary || '') + '</span></div>' +
       '<div class="row" style="gap:6px"><span class="small">Context</span><select id="cmpCtx"><option value="3">3 lines</option><option value="5" selected>5 lines</option><option value="15">15 lines</option><option value="50">50 lines</option><option value="all">whole file</option></select>' +
       '<button class="btn small" id="cmpP">&#9650; Previous change</button><button class="btn small" id="cmpN">&#9660; Next change</button><span class="small muted" id="cmpPos"></span><button class="btn small primary" id="cmpX">Close</button></div></div>' +
       '<div class="cmp-cols"><div>Source (master): <code>' + esc(f.srcStatus === 'Absent' ? '- not in the source -' : f.path) + '</code></div><div>BAR: <code>' + esc(f.barPath ? f.barPath : '- not in the BAR -') + '</code></div></div>' +

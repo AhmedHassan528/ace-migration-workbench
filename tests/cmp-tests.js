@@ -158,6 +158,73 @@
     a.ok(y && y.status === 'error' && y.severity === 'critical' && /could not be read/.test(y.note), 'unreadable application archive: critical error with a message: ' + (y && y.note));
     a.eq(res.summary.applications.error, 1, 'counted in the summary'); a.ok(res.summary.critical >= 1, 'and as a critical issue');
   });
+  test('C08', 'Static libraries: each library source is compared with the BAR library of the same name, in a result of its own; only flows and ESQL; JARs never opened', { category: 'BAR vs source' }, async function (a) {
+    var jarz = BADJAR;   // a JAR with a wrong CRC: it would raise an error if anything extracted it
+    var libX = await Fx.rawZip([{ name: 'X.esql', data: 'x same\n' }, { name: 'X.msgflow', data: FLOW('bar-version') }, { name: 'Extra.esql', data: 'only in the BAR\n' }, { name: 'doc.wsdl', data: WSDL('bar') }, Object.assign({ name: 'lib/x.jar' }, jarz)]);
+    var libY = await Fx.rawZip([{ name: 'Y.esql', data: 'y\n' }, { name: 'Y.subflow', data: FLOW('y') }]);
+    var libW = await Fx.rawZip([{ name: 'W.esql', data: 'w\n' }]);
+    var b = await bar([
+      { name: 'AppA', files: { 'AppA.esql': ESQL_A, 'LibX.libzip': { data: libX }, 'LibY.libzip': { data: libY }, 'big.jar': jarz } },
+      { name: 'AppB', files: { 'AppB.esql': ESQL_A, 'LibY.libzip': { data: libY }, 'LibW.libzip': { data: libW } } }], [{ name: 'Shared.shlibzip', data: libY }]);
+    var sx = await src([{ name: 'LibX', natures: LIB, files: { 'X.esql': 'x same\n', 'X.msgflow': FLOW('source-version'), 'OnlySrc.subflow': FLOW('s'), 'doc.wsdl': WSDL('src'), 'lib/x.jar': jarz } }]);
+    var sy = await src([{ name: 'LibY', natures: LIB, files: { 'Y.esql': 'y\n', 'Y.subflow': FLOW('y') } }]);
+    var sz = await src([{ name: 'LibZ', natures: LIB, files: { 'Z.esql': 'z\n' } }]);
+    var ls = await C.readLibrarySources([{ label: 'LibX.zip', zip: F(sx, 'LibX.zip') }, { label: 'LibY.zip', zip: F(sy, 'LibY.zip') }, { label: 'LibZ.zip', zip: F(sz, 'LibZ.zip') }]);
+    a.eq(ls.libs.map(function (l) { return l.name; }).join(','), 'LibX,LibY,LibZ', 'three library sources read (one library each)');
+    a.ok(ls.libs[0].files.every(function (f) { return f.ext === 'esql' || f.ext === 'msgflow' || f.ext === 'subflow'; }) && !ls.libs[0].files.some(function (f) { return /\.(wsdl|jar)$/.test(f.rel); }), 'only ESQL, message flows and subflows are taken from a library source (no WSDL, no JAR)');
+    var brr = await C.readBar(F(b, 'L.bar')), res = await C.compareLibraries(ls, brr, {});
+    var s = res.summary, lib = function (n) { return res.libraries.filter(function (l) { return l.name === n; }); };
+    a.eq(s.libraries.compared + '/' + s.libraries.noSource + '/' + s.libraries.notInBar, '2/1/1', 'compared / BAR library without source (LibW) / source library not in the BAR (LibZ)');
+    a.eq(lib('LibY').length + ':' + lib('LibY')[0].copies.length, '1:2', 'LibY is in two applications with the same content: compared once, both locations listed');
+    a.ok(lib('LibY')[0].counts.identical === 2 && lib('LibY')[0].severity === 'ok', 'LibY is identical');
+    var fx = function (p) { return res.files.filter(function (f) { return f.lib === 'LibX' && f.path === p; })[0]; };
+    a.ok(fx('X.esql').status === 'identical', 'same ESQL: identical');
+    a.ok(fx('X.msgflow').status === 'modified' && fx('X.msgflow').severity === 'difference' && fx('X.msgflow').type === 'Message flow', 'modified message flow: a difference');
+    a.ok(fx('OnlySrc.subflow').status === 'missing-in-bar' && fx('OnlySrc.subflow').severity === 'critical', 'a source library file that is not in the BAR: critical');
+    a.ok(fx('Extra.esql').status === 'extra-in-bar' && fx('Extra.esql').severity === 'warning', 'a BAR library file with no source: non-critical warning');
+    a.ok(!fx('doc.wsdl') && !res.files.some(function (f) { return /\.(wsdl|xsd|jar)$/.test(f.path); }), 'WSDL and JAR files are not part of the library result');
+    a.eq(res.files.length, 6, 'files: LibX 4 (X.esql, X.msgflow, OnlySrc.subflow, Extra.esql) + LibY 2 (compared once for both applications)');
+    a.ok(lib('LibW')[0].status === 'no-source' && lib('LibZ')[0].status === 'not-in-bar', 'unmatched libraries are listed with their own status');
+    a.ok(res.libraries.every(function (l) { return l.name !== 'Shared'; }), 'the shared library at the BAR root is ignored');
+    a.ok(s.jarsNotOpened >= 2, 'JARs were counted, not opened (' + s.jarsNotOpened + ')');
+    a.eq(s.critical, 1, 'one critical issue (the missing source file)');
+    // the application result is a different structure and does not contain the libraries
+    var appRes = await C.compare(await C.readSource({ zip: F(await src([{ name: 'AppA', natures: APP, files: { 'AppA.esql': ESQL_A } }]), 's.zip') }), await C.readBar(F(b, 'L.bar')), {});
+    a.ok(appRes.summary.applications.compared === 1 && appRes.files.length === 1 && !appRes.libraries, 'the application comparison is unchanged and has no library data');
+    a.ok(/^Library,Used by,File,Type,Source,BAR,Status,Severity/.test(C.reportLibrariesCsv(res)) && JSON.parse(C.reportLibrariesJson(res)).libraries.length === 4, 'library CSV and JSON reports');
+  });
+  test('C09', 'Static libraries: a library folder, a different version of the same library in two applications, a corrupt library archive', { category: 'BAR vs source' }, async function (a) {
+    var lib1 = await Fx.rawZip([{ name: 'A.esql', data: 'one\n' }]), lib2 = await Fx.rawZip([{ name: 'A.esql', data: 'two\n' }]);
+    var b = await bar([{ name: 'App1', files: { 'LibA.libzip': { data: lib1 } } }, { name: 'App2', files: { 'LibA.libzip': { data: lib2 } } }, { name: 'App3', files: { 'LibBad.libzip': { data: util.encodeUtf8('this is not a zip archive') } } }]);
+    var sa = await src([{ name: 'LibA', natures: LIB, files: { 'A.esql': 'one\n' } }]), sbad = await src([{ name: 'LibBad', natures: LIB, files: { 'B.esql': 'b\n' } }]);
+    // the library source as a folder (paths from webkitRelativePath)
+    async function asFolder(bytes) { var arc = await ACE.zip.open(ACE.zip.bytesSource(new Uint8Array(await bytes.arrayBuffer ? await bytes.arrayBuffer() : bytes))), out = []; for (var i = 0; i < arc.entries.length; i++) { var e = arc.entries[i]; if (e.isDir) continue; var f = new File([await ACE.zip.extract(arc, e)], util.basename(e.path)); Object.defineProperty(f, 'webkitRelativePath', { value: e.path }); out.push(f); } return out; }
+    var ls = await C.readLibrarySources([{ label: 'folder LibA', files: await asFolder(sa) }, { label: 'LibBad.zip', zip: F(sbad, 'LibBad.zip') }]);
+    var res = await C.compareLibraries(ls, await C.readBar(F(b, 'V.bar')), {});
+    var la = res.libraries.filter(function (l) { return l.name === 'LibA'; });
+    a.eq(la.length, 2, 'two different versions of LibA in the BAR give two entries');
+    a.ok(la.some(function (l) { return l.counts.identical === 1 && l.copies[0].app === 'App1'; }) && la.some(function (l) { return l.counts.modified === 1 && l.copies[0].app === 'App2'; }), 'App1 has the same version as the source, App2 a modified one');
+    a.ok(la.every(function (l) { return l.variant != null; }), 'the variants are numbered');
+    var bad = res.libraries.filter(function (l) { return l.name === 'LibBad'; })[0];
+    a.ok(bad && bad.status === 'error' && bad.severity === 'critical' && /could not be read/.test(bad.note), 'a corrupt library archive is a critical error with a message, not a crash');
+    var junk = await C.readLibrarySources([{ label: 'app.zip', zip: F(await src([{ name: 'AnApp', natures: APP, files: { 'x.esql': 'x\n' } }]), 'app.zip') }]);
+    a.ok(junk.libs.length === 0 && junk.warnings.some(function (w) { return /not a static library/.test(w); }) && junk.warnings.some(function (w) { return /no static library project/.test(w); }), 'a source that is an application, not a library, is refused with a message');
+  });
+  test('C10', 'Static libraries: the same flow saved by another Toolkit (ids, layout, label type) is identical; a real change is found', { category: 'BAR vs source' }, async function (a) {
+    var head = '<?xml version="1.0" encoding="UTF-8"?>\n<ecore:EPackage xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:ecore="http://www.eclipse.org/emf/2002/Ecore" xmlns:eflow="http://www.ibm.com/wbi/2005/eflow" xmlns:utility="http://www.ibm.com/wbi/2005/eflow_utility" nsURI="L/F.subflow">\n';
+    var srcFlow = head + '  <eClassifiers xmi:type="eflow:FCMComposite" xmi:id="id1" name="F">\n    <composition>\n      <nodes xmi:type="eflow:FCMSource" xmi:id="n1" location="10,10" nodeName="In">\n        <translation xmi:type="utility:TranslatableString" key="In" bundleName="L/F" pluginId="L"/>\n      </nodes>\n      <nodes xmi:type="eflow:FCMSink" xmi:id="n2" location="90,10" nodeName="Out"/>\n    </composition>\n  </eClassifiers>\n</ecore:EPackage>\n';
+    // other writer: other ids, other attribute order and indentation, constant label, an empty sticky board (positions and node order are kept: they are real content)
+    var barFlow = head + '  <eClassifiers xmi:type="eflow:FCMComposite" xmi:id="zz9" name="F">\n    <composition>\n      <nodes xmi:type="eflow:FCMSource" nodeName="In" location="10,10" xmi:id="q1">\n        <translation xmi:type="utility:ConstantString" string="In"/>\n      </nodes>\n      <nodes xmi:type="eflow:FCMSink" xmi:id="q2" location="90,10" nodeName="Out"/>\n      <stickyBoard/>\n    </composition>\n  </eClassifiers>\n</ecore:EPackage>\n';
+    var changed = barFlow.replace('nodeName="Out"', 'nodeName="Other"');
+    async function run(barText) {
+      var b = await bar([{ name: 'App1', files: { 'L.libzip': { data: await Fx.rawZip([{ name: 'F.subflow', data: barText }]) } } }]);
+      var s = await src([{ name: 'L', natures: LIB, files: { 'F.subflow': srcFlow } }]);
+      return C.compareLibraries(await C.readLibrarySources([{ label: 'L.zip', zip: F(s, 'L.zip') }]), await C.readBar(F(b, 'X.bar')), {});
+    }
+    var same = (await run(barFlow)).libraries[0], diff = (await run(changed)).libraries[0];
+    a.ok(same.counts.identical === 1 && same.counts.modified === 0, 'ids, attribute order, label type and sticky board do not count as a difference');
+    a.ok(diff.counts.modified === 1, 'a renamed node is a difference');
+  });
   test('C06', 'Real BAR and real source ZIP: compared by application name, framework ignored, JARs untouched', { category: 'BAR vs source', requires: 'bar' }, async function (a, env) {
     var srcs = (env.workspaceFiles && env.workspaceFiles.length ? env.workspaceFiles : [env.workspaceFile]).filter(function (f) { return f && /\.zip$/i.test(f.name); });
     if (!srcs.length) { a.note('select a source ZIP as the workspace ZIP to run the comparison'); a.ok(true, 'skipped'); return; }

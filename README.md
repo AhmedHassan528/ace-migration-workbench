@@ -39,7 +39,7 @@ For every JAR in the BAR, the page reports each stage separately. Extracting a J
 
 **Honest failure.** When a method cannot be decompiled with certainty, its file is marked **partial**. That method gets a comment stating the reason, the full bytecode listing, and a body that throws `UnsupportedOperationException`. Partial files are never counted as recovered. Known unsupported constructs: lambdas and method references (`invokedynamic`), non-static inner and anonymous classes, pre-Java 6 `jsr`/`ret` subroutines, unusual `finally` shapes, and obfuscated names that are Java keywords.
 
-**Measured quality:** a real application JAR from a production BAR (not published) decompiles 3/3 classes and 10/10 methods completely; the output compiles with javac and behaves identically to the original bytecode on the tested inputs. The method is in [docs/DECOMPILER-VALIDATION.md](docs/DECOMPILER-VALIDATION.md) (not published).
+**Measured quality** ([docs/DECOMPILER-VALIDATION.md](docs/DECOMPILER-VALIDATION.md)): `FrameworkJPrj.jar` from ContentCreate.bar decompiles 3/3 classes and 10/10 methods completely; the output compiles with javac and behaves identically to the original bytecode on the tested inputs.
 
 **Driver JARs** are detected from content (the `java.sql.Driver` service registration, driver packages, implementations, manifests; file names are weak evidence). They are excluded from decompilation by default and kept in `Lib/` as dependencies. Every JAR has Include/Exclude/Reset controls (kept on this page only), and the excluded-JAR report can be downloaded.
 
@@ -91,6 +91,10 @@ Compares the applications of a BAR with the source code, which is the master. Tw
 - **Scope:** only ESQL, WSDL, XSD, message flows and subflows are scanned. Java and JAR files are never read or decompiled and are not opened. Extra framework ESQL files inside a BAR application are ignored (same file name as an ESQL file of a source library, a framework library folder, or your own name patterns).
 - **Classification:** *missing in BAR* (a source file that is not in the BAR) and *modified WSDL/XSD* are **critical**. Modified ESQL, message flow or subflow is a **difference**. *Extra in BAR* (a BAR file with no source) is a **non-critical warning**. A source flow for which the BAR only has a compiled `.cmf` is *not comparable*. Line endings and trailing blanks are ignored by default (option).
 - **Result:** a summary, a table per application, and a file table (application, file, type, source status, BAR status, status, severity, differences) with filters, paging, CSV and JSON export. Every file with differences has a button that opens a side-by-side window: changed lines and the changed characters are highlighted, with previous/next change and a context setting.
+- **Static libraries (separate input and separate result):** add one library source per library (a folder or a ZIP; several at once), with or without an application source. Every `.libzip` inside the applications of the BAR is compared with the source library of the same name. The result has its own cards, table, filters and CSV/JSON export, below the application result; the application comparison is not affected.
+  - **Scope:** only ESQL, message flows and subflows. JAR files (in the BAR and in the sources) are only counted, never opened, scanned or decompiled.
+  - **Flows are compared by content:** another Toolkit version rewrites ids, attribute order, generated plugin ids, label types (translatable vs constant string) and empty notes, so a text diff would call identical flows different. Those are ignored; every other change (nodes, properties, connections, names) is reported and shown side by side.
+  - **Statuses:** compared, no source given for that library, source library not in the BAR, or archive unreadable (critical). The same library in several applications with identical content is compared once and lists the applications; different versions are numbered.
 - **Speed:** only the central directories are read up front; an application archive is extracted only when a source application of the same name exists; entries with equal size and CRC-32 are identical without being extracted.
 
 ## 5. Source Explorer
@@ -106,9 +110,9 @@ Extracts the source from a BAR or a Toolkit workspace ZIP and shows it two ways.
 ## 6. Tests
 
 Open `tests/index.html`, optionally select the real BAR and source ZIP(s), and press **Run all tests**.
-- 77 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C07) and the page independence (P01–P06). Some use a real BAR or real source ZIPs if you select them; those tests report NOT RUN without them.
+- 83 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C10) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with a real BAR and real source ZIPs: **77 PASS, 4 EXTERNAL**. The result files are not published because they contain names from those private inputs.
+- Recorded run from `file://` (headless Chrome) with the real files: **83 PASS, 4 EXTERNAL**.
 
 ## 7. Structure
 

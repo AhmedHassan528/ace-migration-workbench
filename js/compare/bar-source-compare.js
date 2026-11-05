@@ -116,7 +116,7 @@
         if (ext === 'jar') { stats.jars++; continue; }
         if (!top) continue;
         if (ext === 'appzip') apps.push({ name: util.stripExt(e.path), fileName: e.path, size: e.size, from: label, archive: arc, ent: e, opened: null });
-        else if (ext === 'libzip' || ext === 'shlibzip') libs.push({ name: util.stripExt(e.path), type: ext, from: label });
+        else if (ext === 'libzip' || ext === 'shlibzip') libs.push({ name: util.stripExt(e.path), type: ext, from: label, archive: arc, ent: e, rel: e.path, size: e.size, crc: e.crc });
         else if (ext === 'bar') {
           stats.nestedBars++;
           if (depth >= 3) { warnings.push('Nested BAR not opened (depth limit): ' + e.path); continue; }
@@ -131,14 +131,14 @@
     apps.forEach(function (app) {
       app.open = async function (oo) {
         if (app.opened) return app.opened;
-        var c = (oo && oo.cancel) || cancel, res = { files: [], libs: [], jars: 0, cmf: {}, other: 0, error: null };
+        var c = (oo && oo.cancel) || cancel, res = { files: [], libs: [], libEntries: [], jars: 0, cmf: {}, other: 0, error: null };
         try {
           var inner = await zip.open(zip.bytesSource(await zip.extract(app.archive, app.ent, { maxSize: maxSize, cancel: c })), { label: app.fileName });
           inner.entries.forEach(function (e) {
             if (e.isDir || e.unsafe || !e.path || e.duplicateOf != null) return;
             var x = extOf(e.path);
             if (x === 'jar') { res.jars++; return; }
-            if (x === 'libzip' || x === 'shlibzip') { res.libs.push(util.stripExt(e.path)); return; }
+            if (x === 'libzip' || x === 'shlibzip') { res.libs.push(util.stripExt(e.path)); if (x === 'libzip') res.libEntries.push({ name: util.stripExt(e.path), rel: e.path, size: e.size, crc: e.crc, ent: e, archive: inner }); return; }
             if (x === 'cmf') { res.cmf[lc(e.path.replace(/\.cmf$/i, ''))] = true; return; }
             if (!C.SCOPE[x]) { res.other++; return; }
             res.files.push({ rel: e.path, ext: x, size: e.size, crc: e.crc, read: function () { return zip.extract(inner, e, { maxSize: maxSize, cancel: c }); } });
@@ -147,7 +147,216 @@
         app.opened = res; return res;
       };
     });
-    return { name: file.name, size: file.size, apps: apps, libraries: libs, stats: stats, warnings: warnings };
+    /* Open one static library archive (.libzip) of the BAR: only ESQL, message flows and subflows are listed (to be read on demand).
+     * JARs are counted and never read; every other file is only counted. */
+    function openLib(le, oo) {
+      if (le.opened) return le.opened;
+      var c = (oo && oo.cancel) || cancel, res = { files: [], jars: 0, cmf: {}, other: 0, error: null };
+      return zip.extract(le.archive, le.ent, { maxSize: maxSize, cancel: c }).then(function (bytes) { return zip.open(zip.bytesSource(bytes), { label: le.rel }); }).then(function (inner) {
+        inner.entries.forEach(function (e) {
+          if (e.isDir || e.unsafe || !e.path || e.duplicateOf != null) return;
+          var x = extOf(e.path);
+          if (x === 'jar') { res.jars++; return; }
+          if (x === 'cmf') { res.cmf[lc(e.path.replace(/\.cmf$/i, ''))] = true; return; }
+          if (!C.LIB_SCOPE[x]) { res.other++; return; }
+          res.files.push({ rel: e.path, ext: x, size: e.size, crc: e.crc, read: function () { return zip.extract(inner, e, { maxSize: maxSize, cancel: c }); } });
+        });
+        le.opened = res; return res;
+      }, function (er) { if (util.isCancel(er)) throw er; res.error = er.message; le.opened = res; return res; });
+    }
+    return { name: file.name, size: file.size, apps: apps, libraries: libs, stats: stats, warnings: warnings, openLib: openLib };
+  };
+
+  /* A message flow or subflow compared AS A FLOW, not as text: the Toolkit versions save the same flow with different line breaks, attribute order
+   * and stored uuids, so a line diff of two identical flows can be 100% different. The XML is parsed and written in one canonical layout (one attribute
+   * per line, attributes sorted, whitespace ignored, xmi:id attributes, xmi:uuid annotations and the generated plug-in id left out); nodes, properties and connections are kept. */
+  C.flowCanonical = function (text) {
+    var doc;
+    try { doc = new DOMParser().parseFromString(String(text).replace(/^\uFEFF/, ''), 'application/xml'); } catch (e) { return { ok: false }; }
+    if (!doc.documentElement || doc.getElementsByTagName('parsererror').length) return { ok: false };
+    var out = [];
+    function keep(n) {
+      if (n.nodeType !== 1) return false;
+      if (n.nodeName === 'details' && n.getAttribute('key') === 'xmi:uuid') return false;
+      if (n.nodeName === 'stickyBoard' && !n.attributes.length && !n.children.length) return false;   // an empty notes container that newer Toolkits write
+      if (n.nodeName === 'eAnnotations') return Array.prototype.some.call(n.childNodes, keep);
+      return true;
+    }
+    function walk(el, depth) {
+      var pad = '', i; for (i = 0; i < depth; i++) pad += '  ';
+      var attrList = Array.prototype.slice.call(el.attributes);
+      // a node label saved as a translatable string in one version and as a constant string in another is the same label
+      if (el.nodeName === 'translation' && el.getAttribute('xmi:type') === 'utility:TranslatableString' && el.getAttribute('key') != null) attrList = [{ name: 'xmi:type', value: 'utility:ConstantString' }, { name: 'string', value: el.getAttribute('key') }];
+      var attrs = attrList.filter(function (a) { return a.name !== 'xmi:id' && !(a.name === 'groupName' && a.value === 'Group.Basic'); }).sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+      out.push(pad + '<' + el.nodeName);
+      attrs.forEach(function (a) {
+        var v = a.value;
+        // build metadata: the deployed flow carries a generated plug-in id ("flowAPIgenerated") where the source has the project name
+        if (a.name === 'pluginId') v = '*';
+        else if (a.name === 'resourceName') v = v.replace(/^(platform:\/plugin\/)[^\/]+\//, '$1*/');
+        out.push(pad + '    ' + a.name + '="' + v + '"');
+      });
+      var kids = Array.prototype.filter.call(el.childNodes, function (n) { return keep(n) || ((n.nodeType === 3 || n.nodeType === 4) && n.nodeValue.trim()); });
+      var links = kids.filter(function (n) { return n.nodeType === 1 && n.nodeName === 'attributeLinks'; });
+      if (links.length > 1) {
+        var ls = links.slice().sort(function (x, y) { var kx = x.getAttribute('promotedAttribute') + '|' + x.getAttribute('overriddenNodes'), ky = y.getAttribute('promotedAttribute') + '|' + y.getAttribute('overriddenNodes'); return kx < ky ? -1 : kx > ky ? 1 : 0; }), li = 0;
+        kids = kids.map(function (n) { return n.nodeType === 1 && n.nodeName === 'attributeLinks' ? ls[li++] : n; });
+      }
+      out.push(pad + (kids.length ? '  >' : '  />'));
+      kids.forEach(function (n) { if (n.nodeType === 1) walk(n, depth + 1); else out.push(pad + '  ' + n.nodeValue.trim()); });
+      if (kids.length) out.push(pad + '</' + el.nodeName + '>');
+    }
+    walk(doc.documentElement, 0);
+    return { ok: true, text: out.join('\n') };
+  };
+  /* ================= static libraries (independent of the application comparison) =================
+   * The BAR holds the static libraries of an application as .libzip archives inside the .appzip. Each library you provide (a folder or a ZIP with
+   * the source of one static library) is compared with the BAR's library of the same name. Only message flows, subflows and ESQL are scanned:
+   * no WSDL/XSD, and JAR files are neither opened, read nor analysed (they are only counted). The result has its own structure (res.libraries,
+   * res.files, ...), separate from the application result. */
+  C.LIB_SCOPE = { esql: 'ESQL', msgflow: 'Message flow', subflow: 'Subflow' };
+
+  /* entries: [{label, zip: File} | {label, files: [File...]}]: one entry = one static library (a workspace holding several library projects gives several).
+   * Returns {libs: [{name, label, files, type}], warnings, stats}. */
+  C.readLibrarySources = async function (entries, opts) {
+    var libs = [], warnings = [], stats = { entries: entries.length, files: 0, jars: 0 }, seen = {};
+    for (var i = 0; i < entries.length; i++) {
+      var en = entries[i], src = await C.readSource(en.zip ? { zip: en.zip } : { files: en.files }, opts), used = 0;
+      stats.files += src.stats.files; stats.jars += src.stats.jars;
+      src.warnings.forEach(function (w) { warnings.push(en.label + ': ' + w); });
+      src.projects.forEach(function (p) {
+        if (p.type !== 'library' && p.type !== 'unknown') { warnings.push(en.label + ': project "' + p.name + '" is a ' + p.type + ' project, not a static library; ignored.'); return; }
+        if (seen[lc(p.name)]) { warnings.push(en.label + ': a library named "' + p.name + '" was already provided (' + seen[lc(p.name)] + '); this one is ignored.'); return; }
+        seen[lc(p.name)] = en.label; used++;
+        libs.push({ name: p.name, label: en.label, type: p.type, files: p.files.filter(function (f) { return !!C.LIB_SCOPE[f.ext]; }) });
+      });
+      if (!used) warnings.push(en.label + ': no static library project found.');
+    }
+    return { libs: libs, warnings: warnings, stats: stats };
+  };
+
+  /* Pair and compare two file sets of one library (source = master). push(f) receives every result. */
+  async function compareLibFiles(sFiles, bOpened, o, cancel, push) {
+    var sMap = {}, bMap = {}, bLower = {}, sLeft = {}, bLeft = {}, pairs = [];
+    sFiles.forEach(function (f) { sMap[f.rel] = f; sLeft[f.rel] = f; });
+    bOpened.files.forEach(function (f) { bMap[f.rel] = f; bLeft[f.rel] = f; (bLower[lc(f.rel)] = bLower[lc(f.rel)] || []).push(f); });
+    Object.keys(sLeft).forEach(function (r) { if (bMap[r]) { pairs.push({ s: sMap[r], b: bMap[r], note: '' }); delete sLeft[r]; delete bLeft[r]; } });
+    Object.keys(sLeft).slice().forEach(function (r) {
+      var c = (bLower[lc(r)] || []).filter(function (x) { return bLeft[x.rel]; });
+      if (c.length === 1) { pairs.push({ s: sMap[r], b: c[0], note: 'Path differs only in letter case in the BAR (' + c[0].rel + ').' }); delete sLeft[r]; delete bLeft[c[0].rel]; }
+    });
+    var byS = {}, byB = {};
+    Object.keys(sLeft).forEach(function (r) { var k = lc(util.basename(r)); (byS[k] = byS[k] || []).push(sLeft[r]); });
+    Object.keys(bLeft).forEach(function (r) { var k = lc(util.basename(r)); (byB[k] = byB[k] || []).push(bLeft[r]); });
+    Object.keys(byS).forEach(function (k) {
+      if (byS[k].length === 1 && byB[k] && byB[k].length === 1) {
+        var s1 = byS[k][0], b1 = byB[k][0];
+        pairs.push({ s: s1, b: b1, note: 'Found in a different folder: source "' + s1.rel + '", BAR "' + b1.rel + '".' }); delete sLeft[s1.rel]; delete bLeft[b1.rel];
+      }
+    });
+    await pool(pairs, 6, async function (pf) {
+      var s = pf.s, b = pf.b, ext = s.ext, f = { path: s.rel, barPath: b.rel, type: C.LIB_SCOPE[ext], ext: ext, srcStatus: 'Present', barStatus: 'Present', note: pf.note, srcText: null, barText: null };
+      if (s.crc != null && b.crc != null && s.crc === b.crc && s.size === b.size) { f.status = 'identical'; f.how = 'size and CRC-32 equal'; }
+      else {
+        var sb, bb;
+        try { sb = await s.read(); bb = await b.read(); } catch (e) { if (util.isCancel(e)) throw e; f.status = 'not-comparable'; f.severity = 'warning'; f.summary = 'Could not be read: ' + e.message; f.srcStatus = 'Unreadable'; push(f); return; }
+        if (util.bytesEqual(sb, bb)) { f.status = 'identical'; f.how = 'bytes equal'; }
+        else {
+          var st = decode(sb), bt = decode(bb), isFlow = ext === 'msgflow' || ext === 'subflow', cs = isFlow ? C.flowCanonical(st) : null, cb = isFlow ? C.flowCanonical(bt) : null, asFlow = !!(cs && cb && cs.ok && cb.ok);
+          var ns = asFlow ? cs.text : C.normalize(st, o.ignoreWhitespace), nb = asFlow ? cb.text : C.normalize(bt, o.ignoreWhitespace);
+          if (ns === nb) { f.status = 'identical'; f.how = asFlow ? 'same flow, different file layout' : 'line endings / trailing blanks only'; f.cosmetic = true; f.asFlow = asFlow; }
+          else {
+            f.status = 'modified'; f.asFlow = asFlow; f.srcText = asFlow ? cs.text : st; f.barText = asFlow ? cb.text : bt;
+            var d = C.lineDiff(util.lines(ns), util.lines(nb)), added = 0, removed = 0, first = null;
+            d.forEach(function (x) { if (x.op === '+') added++; else if (x.op === '-') removed++; if (x.op !== ' ' && first == null) first = x.a || x.b; });
+            f.added = added; f.removed = removed; f.firstLine = first;
+            f.summary = removed + added ? (removed + added) + ' changed ' + (f.asFlow ? 'flow line(s) (one attribute per line)' : 'line(s)') + ': ' + removed + ' only in source, ' + added + ' only in BAR; first at line ' + first : 'Only line endings or encoding differ (every line is equal)';
+          }
+        }
+      }
+      if (f.status === 'identical') f.summary = f.cosmetic ? (f.asFlow ? 'Same flow: only the file layout differs (line breaks, attribute order, ids)' : 'Only line endings or trailing blanks differ') : '';
+      f.severity = severityOf(f.status, ext);
+      push(f);
+    }, cancel);
+    for (var sr in sLeft) {
+      var sf = sLeft[sr], text = null;
+      try { text = decode(await sf.read()); } catch (e) { if (util.isCancel(e)) throw e; }
+      var compiled = (sf.ext === 'msgflow' || sf.ext === 'subflow') && bOpened.cmf[lc(sf.rel.replace(/\.[^.]+$/, ''))];
+      push(compiled ? { path: sf.rel, barPath: null, type: C.LIB_SCOPE[sf.ext], ext: sf.ext, srcStatus: 'Present', barStatus: 'Compiled only (.cmf)', status: 'not-comparable', severity: 'warning', summary: 'The BAR holds only the compiled flow (.cmf): no source to compare.', note: '', srcText: text, barText: null }
+        : { path: sf.rel, barPath: null, type: C.LIB_SCOPE[sf.ext], ext: sf.ext, srcStatus: 'Present', barStatus: 'Missing', status: 'missing-in-bar', severity: 'critical', summary: 'The source file is not in the BAR.', note: '', srcText: text, barText: null });
+    }
+    for (var br in bLeft) {
+      var bf = bLeft[br], btext = null;
+      try { btext = decode(await bf.read()); } catch (e) { if (util.isCancel(e)) throw e; }
+      push({ path: bf.rel, barPath: bf.rel, type: C.LIB_SCOPE[bf.ext], ext: bf.ext, srcStatus: 'Absent', barStatus: 'Present', status: 'extra-in-bar', severity: 'warning', summary: 'The BAR has this file; the source does not.', note: '', srcText: null, barText: btext });
+    }
+  }
+
+  /* libSources: C.readLibrarySources() result; bar: C.readBar() result; options: C.DEFAULTS.
+   * Returns {libraries: [...], files: [...], notes, warnings, summary}: its own structure, not mixed with the application result. */
+  C.compareLibraries = async function (libSources, bar, options, opts) {
+    opts = opts || {};
+    var o = Object.assign({}, C.DEFAULTS, options || {}), cancel = opts.cancel || new util.CancelToken(), progress = opts.progress || noop, t0 = Date.now();
+    var res = { options: o, libraries: [], files: [], notes: [], warnings: libSources.warnings.slice(), source: { stats: libSources.stats, libraries: libSources.libs.map(function (l) { return l.name; }) }, bar: { name: bar.name, applications: bar.apps.length, jars: 0 }, at: util.nowIso() };
+    // 1. every static library archive of the BAR: inside each application archive, and at the BAR root
+    var copies = [];
+    for (var ai = 0; ai < bar.apps.length; ai++) {
+      cancel.check(); progress('Libraries', ai, bar.apps.length, bar.apps[ai].name); await util.yieldUI();
+      var opened = await bar.apps[ai].open({ cancel: cancel });
+      if (opened.error) { res.warnings.push('Application ' + bar.apps[ai].name + ' could not be read, its libraries are not compared: ' + opened.error); continue; }
+      opened.libEntries.forEach(function (le) { copies.push({ name: le.name, app: bar.apps[ai].name, loc: bar.apps[ai].fileName + '!/' + le.rel, le: le }); });
+    }
+    bar.libraries.forEach(function (l) { if (l.type === 'libzip' && l.ent) copies.push({ name: l.name, app: null, loc: l.from + l.rel, le: { name: l.name, rel: l.rel, size: l.size, crc: l.crc, ent: l.ent, archive: l.archive } }); });
+    // 2. group the copies by library name, then by content (the same library in several applications is compared once)
+    var byName = {};
+    copies.forEach(function (c) { var k = lc(c.name); (byName[k] = byName[k] || { name: c.name, copies: [] }).copies.push(c); });
+    var srcByName = {}; libSources.libs.forEach(function (l) { srcByName[lc(l.name)] = l; });
+    var matched = {}, id = 0, names = Object.keys(byName).sort();
+    for (var ni = 0; ni < names.length; ni++) {
+      cancel.check();
+      var bl = byName[names[ni]], sl = srcByName[names[ni]];
+      if (!sl) { res.libraries.push({ name: bl.name, status: 'no-source', severity: 'warning', source: null, copies: bl.copies.map(function (c) { return { app: c.app, loc: c.loc }; }), counts: {}, note: 'No source was provided for this library: it is not compared.' }); continue; }
+      matched[names[ni]] = true;
+      var variants = {};
+      bl.copies.forEach(function (c) { var k = c.le.crc + '|' + c.le.size; (variants[k] = variants[k] || []).push(c); });
+      var vkeys = Object.keys(variants), vi = 0;
+      for (var vk = 0; vk < vkeys.length; vk++) {
+        var group = variants[vkeys[vk]]; vi++;
+        progress('Libraries', ni, names.length, bl.name);
+        var lo = await bar.openLib(group[0].le, { cancel: cancel });
+        var entry = { name: bl.name, variant: vkeys.length > 1 ? vi : null, status: 'compared', severity: 'ok', source: sl.label, srcName: sl.name, copies: group.map(function (c) { return { app: c.app, loc: c.loc }; }), counts: { identical: 0, modified: 0, 'missing-in-bar': 0, 'extra-in-bar': 0, 'not-comparable': 0 }, jars: lo.jars, note: sl.name === bl.name ? '' : 'Matched by name ignoring letter case.' };
+        res.libraries.push(entry); res.bar.jars += lo.jars;
+        if (lo.error) { entry.status = 'error'; entry.severity = 'critical'; entry.note = 'The library archive could not be read: ' + lo.error; continue; }
+        await compareLibFiles(sl.files, lo, o, cancel, function (f) { f.id = ++id; f.lib = bl.name; f.variant = entry.variant; f.apps = entry.copies.map(function (c) { return c.app || '(BAR root)'; }); res.files.push(f); entry.counts[f.status]++; if (RANK[f.severity] > RANK[entry.severity]) entry.severity = f.severity; });
+      }
+    }
+    libSources.libs.forEach(function (l) { if (!matched[lc(l.name)]) res.libraries.push({ name: l.name, status: 'not-in-bar', severity: 'warning', source: l.label, copies: [], counts: {}, note: 'This library was provided but the BAR has no static library of this name.' }); });
+    if (!bar.apps.length && !copies.length) res.notes.push('The BAR contains no application archive (.appzip) and no static library.');
+    else if (!copies.length) res.notes.push('The BAR contains no static library (.libzip).');
+    res.files.sort(function (x, y) { return x.lib === y.lib ? (x.path < y.path ? -1 : x.path > y.path ? 1 : 0) : (lc(x.lib) < lc(y.lib) ? -1 : 1); });
+    res.summary = C.summarizeLibraries(res); res.summary.elapsedMs = Date.now() - t0;
+    return res;
+  };
+
+  C.summarizeLibraries = function (res) {
+    var s = { libraries: { compared: 0, noSource: 0, notInBar: 0, error: 0 }, files: res.files.length, byStatus: {}, bySeverity: { critical: 0, difference: 0, warning: 0, ok: 0 }, cosmetic: 0, jarsNotOpened: (res.bar.jars || 0) + (res.source.stats.jars || 0) };
+    res.libraries.forEach(function (l) { if (l.status === 'compared') s.libraries.compared++; else if (l.status === 'no-source') s.libraries.noSource++; else if (l.status === 'not-in-bar') s.libraries.notInBar++; else { s.libraries.error++; s.bySeverity.critical++; } });
+    res.files.forEach(function (f) { s.byStatus[f.status] = (s.byStatus[f.status] || 0) + 1; s.bySeverity[f.severity]++; if (f.cosmetic) s.cosmetic++; });
+    s.critical = s.bySeverity.critical;
+    return s;
+  };
+
+  C.reportLibrariesJson = function (res) {
+    return JSON.stringify({
+      tool: 'IBM ACE Migration Workbench - BAR static libraries vs source libraries', generated: res.at, bar: res.bar, source: res.source, options: res.options, summary: res.summary, notes: res.notes, warnings: res.warnings,
+      libraries: res.libraries, files: res.files.map(function (f) { return { library: f.lib, usedBy: f.apps, path: f.path, barPath: f.barPath, type: f.type, source: f.srcStatus, bar: f.barStatus, status: f.status, severity: f.severity, differences: f.summary, added: f.added, removed: f.removed, firstChangedLine: f.firstLine, note: f.note }; })
+    }, null, 2);
+  };
+  C.reportLibrariesCsv = function (res) {
+    function q(v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+    var rows = [['Library', 'Used by', 'File', 'Type', 'Source', 'BAR', 'Status', 'Severity', 'Differences', 'Note']];
+    res.files.forEach(function (f) { rows.push([f.lib, (f.apps || []).join('; '), f.path, f.type, f.srcStatus, f.barStatus, C.STATUS[f.status], C.SEVERITY[f.severity], f.summary, f.note]); });
+    return rows.map(function (r) { return r.map(q).join(','); }).join('\r\n') + '\r\n';
   };
 
   /* ================= text and diff ================= */
