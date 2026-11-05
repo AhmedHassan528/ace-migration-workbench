@@ -171,3 +171,4 @@ table.cmp-tbl tr.flash td { outline: 2px solid var(--accent); outline-offset: -2
 table.fd-tbl td, table.fd-tbl th { font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
 table.fd-tbl tr.chg td { background: color-mix(in srgb, var(--warn) 14%, transparent); } table.fd-tbl tr.del td { background: color-mix(in srgb, var(--err) 13%, transparent); } table.fd-tbl tr.add td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 @media (max-width: 900px) { .fd-panes, .fd-bottom { grid-template-columns: 1fr; } }
+.browser-warn { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); color: var(--ink); border-bottom: 2px solid var(--warn); padding: 6px 14px; font-size: 13px; }

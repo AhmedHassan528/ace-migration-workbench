@@ -1,6 +1,6 @@
 # IBM ACE Migration Workbench
 
-An offline website, written in HTML, CSS and vanilla JavaScript only. Open **`index.html`** in Chrome or Edge (double-click it or File > Open). There are no scripts, servers, bridges, helper applications, Java runtimes, external libraries or network access, and nothing is uploaded or stored in the browser.
+An offline website, written in HTML, CSS and vanilla JavaScript only. Open **`index.html`** in Chrome, Edge or Firefox (double-click it or File > Open). There are no scripts, servers, bridges, helper applications, Java runtimes, external libraries or network access, and nothing is uploaded or stored in the browser.
 
 It has **five independent pages**. Each page has its own file picker and its own state: a file chosen on one page is never seen by another page, and a choice made on one page never changes another.
 
