@@ -2,9 +2,9 @@
  * and keeps its own state (S below); it does not use any other page's input. */
 (function (ACE) {
   'use strict';
-  var UI = ACE.ui, util = ACE.util, esc = util.esc, C = ACE.cmp;
+  var UI = ACE.ui, util = ACE.util, esc = util.esc, C = ACE.cmp, FD = ACE.flowdiff;
   var PAGE = 200;
-  var S = { bar: null, srcZip: null, srcFiles: null, srcLabel: '', opt: { ignoreFramework: true, ignoreWhitespace: true, frameworkPatterns: '' }, result: null, page: 0,
+  var S = { flowMode: 'diagram', bar: null, srcZip: null, srcFiles: null, srcLabel: '', opt: { ignoreFramework: true, ignoreWhitespace: true, frameworkPatterns: '' }, result: null, page: 0,
     f: { q: '', status: 'diff', severity: '', type: '', app: '' }, err: null,
     libs: [], libResult: null, lf: { q: '', status: 'diff', severity: '', lib: '' }, libPage: 0 };
   var SEV_CLS = { critical: 'sev-Error', difference: 'sev-Warning', warning: 'st-info', ok: 'st-pass' };
@@ -252,12 +252,13 @@
   function openDetailFile(f, ignoreWs, owner) {
     var old = document.getElementById('cmpDetail'); if (old) old.remove();
     var rows = C.sideBySide(f.srcText || '', f.barText || '', ignoreWs), ctx = 5, cur = -1, MAXROWS = 8000;
+    var isFlow = f.ext === 'msgflow' || f.ext === 'subflow';
     var back = document.createElement('div'); back.id = 'cmpDetail'; back.className = 'dlg-back cmp-back';
     var chg = rows.filter(function (r) { return r.kind !== 'eq'; }).length;
     back.innerHTML = '<div class="cmp-win" role="dialog" aria-modal="true">' +
       '<div class="cmp-head"><div><b>' + esc(owner) + ' / ' + esc(f.path) + '</b> &nbsp; ' + esc(f.type) + ' &nbsp; ' + sevBadge(f.severity) + ' <span class="small muted">' + esc(C.STATUS[f.status]) + ' - ' + esc(f.summary || '') + '</span></div>' +
-      '<div class="row" style="gap:6px"><span class="small">Context</span><select id="cmpCtx"><option value="3">3 lines</option><option value="5" selected>5 lines</option><option value="15">15 lines</option><option value="50">50 lines</option><option value="all">whole file</option></select>' +
-      '<button class="btn small" id="cmpP">&#9650; Previous change</button><button class="btn small" id="cmpN">&#9660; Next change</button><span class="small muted" id="cmpPos"></span><button class="btn small primary" id="cmpX">Close</button></div></div>' +
+      '<div class="row" style="gap:6px">' + (isFlow ? '<span class="small"><b>Compare as</b></span><select id="cmpMode" title="How the two message flows are compared"><option value="diagram">Visual diagram</option><option value="xml">XML (text)</option></select>' : '') + '<span class="row" id="cmpXmlCtl" style="gap:6px"><span class="small">Context</span><select id="cmpCtx"><option value="3">3 lines</option><option value="5" selected>5 lines</option><option value="15">15 lines</option><option value="50">50 lines</option><option value="all">whole file</option></select>' +
+      '<button class="btn small" id="cmpP">&#9650; Previous change</button><button class="btn small" id="cmpN">&#9660; Next change</button><span class="small muted" id="cmpPos"></span></span><button class="btn small primary" id="cmpX">Close</button></div></div>' +
       '<div class="cmp-cols"><div>Source (master): <code>' + esc(f.srcStatus === 'Absent' ? '- not in the source -' : f.path) + '</code></div><div>BAR: <code>' + esc(f.barPath ? f.barPath : '- not in the BAR -') + '</code></div></div>' +
       '<div class="cmp-body" id="cmpBody"></div></div>';
     document.body.appendChild(back);
@@ -289,7 +290,19 @@
     back.querySelector('#cmpX').onclick = close;
     back.querySelector('#cmpN').onclick = function () { go(1); }; back.querySelector('#cmpP').onclick = function () { go(-1); };
     back.querySelector('#cmpCtx').onchange = function (e) { ctx = e.target.value === 'all' ? null : Number(e.target.value); draw(); };
-    draw(); if (blocks.length) go(1);
+    function showMode() {
+      var mode = isFlow ? S.flowMode : 'xml', ctl = back.querySelector('#cmpXmlCtl');
+      if (isFlow) back.querySelector('#cmpMode').value = mode;
+      if (mode === 'diagram') {
+        var diff = FD.compareText(f.srcRaw != null ? f.srcRaw : f.srcText, f.barRaw != null ? f.barRaw : f.barText);
+        if (diff.error) { body.innerHTML = '<div class="fd-wrap"><p class="small" style="color:var(--err)">' + esc(diff.error) + ' The XML comparison is shown instead.</p></div>'; ctl.hidden = false; setTimeout(function () { S.flowMode = 'xml'; showMode(); S.flowMode = 'diagram'; }, 0); return; }
+        ctl.hidden = true; body.innerHTML = '<div class="fd-wrap"></div>';
+        UI.flowDiagram(body.firstChild, diff, { labelA: 'Source (master)', labelB: 'BAR' });
+        if (diff.summary.identical && f.status === 'modified') body.firstChild.insertAdjacentHTML('afterbegin', '<p class="small" style="margin:0 0 6px"><b>Note:</b> the two files differ as text, but not in nodes, node configuration, connections or flow properties. What differs is outside that structure (for example internal type declarations); choose <i>XML (text)</i> to see it.</p>');
+      } else { ctl.hidden = false; draw(); if (blocks.length) go(1); }
+    }
+    if (isFlow) back.querySelector('#cmpMode').onchange = function (e) { S.flowMode = e.target.value; showMode(); };
+    showMode();
   }
   UI.cmpOpenDetail = openDetail;
   UI.cmpState = S;

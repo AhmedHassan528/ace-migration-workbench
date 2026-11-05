@@ -225,6 +225,77 @@
     a.ok(same.counts.identical === 1 && same.counts.modified === 0, 'ids, attribute order, label type and sticky board do not count as a difference');
     a.ok(diff.counts.modified === 1, 'a renamed node is a difference');
   });
+  /* a small message flow written the way the Toolkit does: nodes [{id,name,type,loc,attrs,constLabel}], conns [[from,fromTerminal,to,toTerminal]] */
+  function flow(nodes, conns, flowAttrs) {
+    var ns = {}; nodes.forEach(function (n) { ns[n.type] = 1; });
+    var h = '<?xml version="1.0" encoding="UTF-8"?>\n<ecore:EPackage xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:ecore="http://www.eclipse.org/emf/2002/Ecore" xmlns:eflow="http://www.ibm.com/wbi/2005/eflow" xmlns:utility="http://www.ibm.com/wbi/2005/eflow_utility"' + Object.keys(ns).map(function (k) { return ' xmlns:' + k + '="' + k + '"'; }).join('') + ' nsURI="F.msgflow">\n  <eClassifiers xmi:type="eflow:FCMComposite" xmi:id="FCMComposite_1" name="F"' + (flowAttrs || '') + '>\n    <composition>\n';
+    nodes.forEach(function (n) {
+      h += '      <nodes xmi:type="' + n.type + ':FCMComposite_1" xmi:id="' + n.id + '" location="' + n.loc + '"' + Object.keys(n.attrs || {}).map(function (k) { return ' ' + k + '="' + n.attrs[k] + '"'; }).join('') + '>\n        <translation xmi:type="utility:' + (n.constLabel ? 'ConstantString" string' : 'TranslatableString" bundleName="x" pluginId="p" key') + '="' + n.name + '"/>\n      </nodes>\n';
+    });
+    conns.forEach(function (c, i) { h += '      <connections xmi:type="eflow:FCMConnection" xmi:id="c' + i + '" targetNode="' + c[2] + '" sourceNode="' + c[0] + '" sourceTerminalName="OutTerminal.' + c[1] + '" targetTerminalName="InTerminal.' + c[3] + '"/>\n'; });
+    return h + '    </composition>\n  </eClassifiers>\n</ecore:EPackage>\n';
+  }
+  var FD = ACE.flowdiff;
+  var BASE = function () { return [
+    { id: 'n1', name: 'In', type: 'ComIbmMQInput.msgnode', loc: '20,40', attrs: { queueName: 'Q1' } },
+    { id: 'n2', name: 'Work', type: 'ComIbmCompute.msgnode', loc: '150,40', attrs: { computeExpression: 'esql://routine/#M.Main', computeMode: 'all' } },
+    { id: 'n3', name: 'Out', type: 'ComIbmMQOutput.msgnode', loc: '280,40', attrs: { queueName: 'Q2' } }
+  ]; };
+  var CONNS = function () { return [['n1', 'out', 'n2', 'in'], ['n2', 'out', 'n3', 'in']]; };
+  test('C11', 'Message flow comparison (structure): same flow written differently is identical; node, property and connection differences are found', { category: 'BAR vs source' }, async function (a) {
+    var src = flow(BASE(), CONNS());
+    // another Toolkit: other ids, other node order, constant labels
+    var other = BASE().reverse().map(function (n, i) { n.id = 'z' + i; n.constLabel = true; return n; }), idOf = {}; other.forEach(function (n) { idOf[n.name] = n.id; });
+    var same = FD.compareText(src, flow(other, [[idOf.In, 'out', idOf.Work, 'in'], [idOf.Work, 'out', idOf.Out, 'in']]));
+    a.ok(!same.error && same.summary.identical && same.summary.nodes.same === 3 && same.summary.conns.same === 2, 'other ids, other order and label representation: identical structure');
+    // a node missing in the BAR, a connection missing in the BAR
+    var b1 = BASE().slice(0, 2), d1 = FD.compareText(src, flow(b1, [['n1', 'out', 'n2', 'in']]));
+    a.ok(d1.summary.nodes.onlyA === 1 && d1.summary.conns.onlyA === 1 && d1.pairs.filter(function (p) { return p.status === 'only-a'; })[0].a.name === 'Out', 'a node and its connection that exist only in the source');
+    // a node added in the BAR
+    var b2 = BASE(); b2.push({ id: 'n4', name: 'Extra', type: 'ComIbmTrace.msgnode', loc: '280,120', attrs: {} });
+    var d2 = FD.compareText(src, flow(b2, CONNS().concat([['n2', 'out', 'n4', 'in']])));
+    a.ok(d2.summary.nodes.onlyB === 1 && d2.summary.conns.onlyB === 1, 'a node and a connection that exist only in the BAR');
+    // properties: changed, missing, added
+    var b3 = BASE(); b3[1].attrs.computeExpression = 'esql://routine/#M.Other'; delete b3[1].attrs.computeMode; b3[1].attrs.dataSource = 'DS'; b3[0].attrs.queueName = 'Q9';
+    var d3 = FD.compareText(src, flow(b3, CONNS())), w = d3.pairs.filter(function (p) { return p.a.name === 'Work'; })[0], i1 = d3.pairs.filter(function (p) { return p.a.name === 'In'; })[0];
+    a.ok(d3.summary.nodes.changed === 2 && w.diffs.some(function (d) { return d.name === 'computeExpression' && d.kind === 'changed'; }) && w.diffs.some(function (d) { return d.name === 'computeMode' && d.kind === 'only-a'; }) && w.diffs.some(function (d) { return d.name === 'dataSource' && d.kind === 'only-b'; }) && i1.diffs[0].name === 'queueName', 'changed, missing and added node properties');
+    a.ok(d3.summary.conns.onlyA === 0 && d3.summary.conns.onlyB === 0, 'property changes do not affect the connections');
+    // the same nodes wired to another terminal
+    var d4 = FD.compareText(src, flow(BASE(), [['n1', 'out', 'n2', 'in'], ['n2', 'failure', 'n3', 'in']]));
+    a.ok(d4.summary.conns.onlyA === 1 && d4.summary.conns.onlyB === 1 && d4.summary.nodes.changed === 0, 'a connection on another terminal is one removed and one added connection');
+    // another node type under the same name; a moved node is not a difference
+    var b5 = BASE(); b5[1].type = 'ComIbmJavaCompute.msgnode'; b5[2].loc = '500,500';
+    var d5 = FD.compareText(src, flow(b5, CONNS())), moved = d5.pairs.filter(function (p) { return p.a.name === 'Out'; })[0];
+    a.ok(d5.pairs.filter(function (p) { return p.a.name === 'Work'; })[0].diffs[0].name === '(node type)' && moved.status === 'same' && moved.moved, 'a different node type is reported; a moved node is only noted');
+    a.ok(FD.compareText('<not xml', src).error && !FD.compareText('', src).error, 'text that is not XML gives a message; an empty side is an empty flow');
+    var d6 = FD.compareText('', src); a.ok(d6.summary.nodes.onlyB === 3 && d6.summary.conns.onlyB === 2, 'a flow missing on one side: everything is only on the other side');
+  });
+  test('C12', 'Message flow comparison (diagram): both flows are drawn, differences are marked, and it is used for application and static library flows', { category: 'BAR vs source' }, async function (a) {
+    var b3 = BASE().slice(0, 2); b3[1].attrs.computeMode = 'tree'; b3.push({ id: 'n4', name: 'Extra', type: 'ComIbmTrace.msgnode', loc: '280,120', attrs: {} });
+    var diff = FD.compareText(flow(BASE(), CONNS()), flow(b3, [['n1', 'out', 'n2', 'in'], ['n2', 'out', 'n4', 'in']]));
+    var host = document.createElement('div'); ACE.ui.flowDiagram(host, diff, { labelA: 'Source (master)', labelB: 'BAR' });
+    var q = function (sel) { return host.querySelectorAll(sel).length; };
+    a.eq(q('.fd-pane[data-side="a"] .fd-node'), 4, 'the source diagram has its 3 nodes and a ghost of the node only in the BAR');
+    a.eq(q('.fd-pane[data-side="b"] .fd-node'), 4, 'the BAR diagram has its 3 nodes and a ghost of the node only in the source');
+    a.eq(q('.fd-pane[data-side="a"] .fd-node.ghost') + q('.fd-pane[data-side="b"] .fd-node.ghost'), 2, 'one ghost on each side');
+    a.ok(q('.fd-pane[data-side="a"] .fd-node.del') === 1 && q('.fd-pane[data-side="b"] .fd-node.add') === 1 && q('.fd-node.chg') === 2, 'removed, added and changed nodes are marked');
+    a.ok(q('.fd-pane[data-side="a"] .fd-edge.del') === 1 && q('.fd-pane[data-side="b"] .fd-edge.add') === 1, 'removed and added connections are marked');
+    a.eq(q('.fd-item'), diff.list.length, 'every difference is listed');
+    host.querySelector('.fd-item').click();
+    a.ok(/Property/.test(host.querySelector('.fd-dbody').textContent) || /Connection/.test(host.querySelector('.fd-dbody').textContent), 'selecting a difference shows the configuration on both sides');
+    // the library and application results keep the real flow, which the diagram needs
+    var lib1 = await Fx.rawZip([{ name: 'F.msgflow', data: flow(b3, CONNS().slice(0, 2)) }]);
+    var b = await bar([{ name: 'App1', files: { 'L.libzip': { data: lib1 } } }]);
+    var s = await src([{ name: 'L', natures: LIB, files: { 'F.msgflow': flow(BASE(), CONNS()) } }]);
+    var res = await C.compareLibraries(await C.readLibrarySources([{ label: 'L.zip', zip: F(s, 'L.zip') }]), await C.readBar(F(b, 'X.bar')), {});
+    var f = res.files.filter(function (x) { return x.status === 'modified'; })[0], d = f && FD.compareText(f.srcRaw, f.barRaw);
+    a.ok(f && d && !d.error && d.summary.nodes.changed === 1 && d.summary.nodes.onlyB === 1, 'a static library flow: the diagram is built from the real flow text');
+    var appBar = await bar([{ name: 'AppA', files: { 'F.msgflow': flow(b3, CONNS().slice(0, 2)) } }]);
+    var appSrc = await src([{ name: 'AppA', natures: APP, files: { 'F.msgflow': flow(BASE(), CONNS()) } }]);
+    var ar = await C.compare(await C.readSource({ zip: F(appSrc, 's.zip') }), await C.readBar(F(appBar, 'A.bar')), {});
+    var af = ar.files.filter(function (x) { return x.status === 'modified'; })[0], ad = af && FD.compareText(af.srcText, af.barText);
+    a.ok(af && ad && !ad.error && ad.summary.nodes.changed === 1, 'an application flow: the same comparison');
+  });
   test('C06', 'Real BAR and real source ZIP: compared by application name, framework ignored, JARs untouched', { category: 'BAR vs source', requires: 'bar' }, async function (a, env) {
     var srcs = (env.workspaceFiles && env.workspaceFiles.length ? env.workspaceFiles : [env.workspaceFile]).filter(function (f) { return f && /\.zip$/i.test(f.name); });
     if (!srcs.length) { a.note('select a source ZIP as the workspace ZIP to run the comparison'); a.ok(true, 'skipped'); return; }

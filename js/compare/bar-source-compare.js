@@ -267,6 +267,7 @@
           if (ns === nb) { f.status = 'identical'; f.how = asFlow ? 'same flow, different file layout' : 'line endings / trailing blanks only'; f.cosmetic = true; f.asFlow = asFlow; }
           else {
             f.status = 'modified'; f.asFlow = asFlow; f.srcText = asFlow ? cs.text : st; f.barText = asFlow ? cb.text : bt;
+            if (isFlow) { f.srcRaw = st; f.barRaw = bt; }   // the diagram view needs the real flow, not the canonical text
             var d = C.lineDiff(util.lines(ns), util.lines(nb)), added = 0, removed = 0, first = null;
             d.forEach(function (x) { if (x.op === '+') added++; else if (x.op === '-') removed++; if (x.op !== ' ' && first == null) first = x.a || x.b; });
             f.added = added; f.removed = removed; f.firstLine = first;

@@ -95,6 +95,9 @@ Compares the applications of a BAR with the source code, which is the master. Tw
   - **Scope:** only ESQL, message flows and subflows. JAR files (in the BAR and in the sources) are only counted, never opened, scanned or decompiled.
   - **Flows are compared by content:** another Toolkit version rewrites ids, attribute order, generated plugin ids, label types (translatable vs constant string) and empty notes, so a text diff would call identical flows different. Those are ignored; every other change (nodes, properties, connections, names) is reported and shown side by side.
   - **Statuses:** compared, no source given for that library, source library not in the BAR, or archive unreadable (critical). The same library in several applications with identical content is compared once and lists the applications; different versions are numbered.
+- **Message flows: two ways to compare (application flows and static library flows alike).** The detail window of every message flow and subflow has a **Compare as** choice:
+  - **Visual diagram:** the flow is rebuilt from its file and drawn on both sides (source on the left, BAR on the right): nodes with their type, and the connections with their terminals. A node or connection that exists on one side only is marked there and shown as a dashed ghost on the other side; a node with different configuration is marked and counted. Click a node, a connection or an entry of the list of differences to see every property on both sides (changed, missing and added properties first). Nodes are matched by name and type, connections by the two nodes and two terminals they join; ids, plug-in ids, the representation of a node label and the order in the file are ignored, and a moved node is noted but not a difference. The two diagrams scroll together and can be zoomed.
+  - **XML (text):** the line-by-line side-by-side view with the changed lines and characters highlighted.
 - **Speed:** only the central directories are read up front; an application archive is extracted only when a source application of the same name exists; entries with equal size and CRC-32 are identical without being extracted.
 
 ## 5. Source Explorer
@@ -110,9 +113,9 @@ Extracts the source from a BAR or a Toolkit workspace ZIP and shows it two ways.
 ## 6. Tests
 
 Open `tests/index.html`, optionally select the real BAR and source ZIP(s), and press **Run all tests**.
-- 83 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C10) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
+- 85 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C12) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with the real files: **83 PASS, 4 EXTERNAL**.
+- Recorded run from `file://` (headless Chrome) with the real files: **85 PASS, 4 EXTERNAL**.
 
 ## 7. Structure
 
@@ -124,11 +127,11 @@ js/java/         classfile (full class-file parser), jar-analyzer (inspection + 
 js/decompiler/   bytecode, types, ir, translate, structure, passes, syntax-check, decompiler
 js/analysis/     msgflow-parser, esql-parser, java17-analyzer, ace-rule-engine, migration-scanner
 js/project/      eclipse-project, explorer-model, project-builder, transforms, diff, library-conversion, library-refactor
-js/compare/      bar-source-compare
+js/compare/      bar-source-compare, flow-diff (structural flow comparison)
 js/report/       reports (JSON + standalone HTML, included in the exported packages)
 js/workflow.js   one controller per page (ACE.workflow.create): own input, own state, own options
 js/ui/           ui-core (page frame, input handling), export-card, and one file per page:
-                 views-barexport, views-migrate, views-libconv, views-compare, views-explorer
+                 views-barexport, views-migrate, views-libconv, views-compare, flow-diagram-view (the side-by-side flow drawing), views-explorer
 config/          default-config, versions (fixed 12.0.5 -> 13.0.8 + IBM facts), driver-signatures
 rules/ tests/ docs/
 ```
