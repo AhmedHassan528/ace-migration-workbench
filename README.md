@@ -113,9 +113,9 @@ Extracts the source from a BAR or a Toolkit workspace ZIP and shows it two ways.
 ## 6. Tests
 
 Open `tests/index.html`, optionally select the real BAR and source ZIP(s), and press **Run all tests**.
-- 86 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C12) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
+- 87 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C12) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with the real files: **86 PASS, 4 EXTERNAL**.
+- Recorded run from `file://` (headless Chrome) with the real files: **87 PASS, 4 EXTERNAL**.
 
 ## 7. Structure
 

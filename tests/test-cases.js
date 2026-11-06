@@ -1115,6 +1115,16 @@
     var doc = new DOMParser().parseFromString(p.text.replace('<ecore:EPackage>', '<ecore:EPackage xmlns:ecore="e" xmlns:xmi="x" xmlns:eflow="f" xmlns:utility="u">'), 'application/xml');
     a.ok(!doc.getElementsByTagName('parsererror').length, 'the rewritten flow is well-formed XML');
   });
+  test('R14', 'Java projects of converted libraries: absolute ACE-install jar entries that duplicate the JCN_HOME entries are removed, nothing else', { category: 'Library conversion' }, async function (a) {
+    var LR = ACE.libref;
+    var cp = '<classpath>\r\n\t<classpathentry kind="var" path="JCN_HOME/javacompute.jar"/>\r\n\t<classpathentry kind="var" path="JCN_HOME/jplugin2.jar"/>\r\n\t<classpathentry kind="lib" path="ojdbc6.jar"/>\r\n\t<classpathentry kind="lib" path="C:/Program Files/IBM/ACE/12.0.8.0/server/classes/jplugin2.jar"/>\r\n\t<classpathentry kind="lib" path="C:\\Program Files\\IBM\\ACE\\12.0.8.0\\server\\classes\\javacompute.jar"/>\r\n\t<classpathentry kind="lib" path="C:/libs/other.jar"/>\r\n</classpath>\r\n';
+    var r = LR.fixAceClasspath(cp);
+    a.eq(r.removed.length, 2, 'both ACE 12.0.8.0 entries are removed (forward and back slashes)');
+    a.ok(/ojdbc6\.jar/.test(r.text) && /C:\/libs\/other\.jar/.test(r.text) && /JCN_HOME\/javacompute\.jar/.test(r.text) && /JCN_HOME\/jplugin2\.jar/.test(r.text), 'the variable entries, project jars and other absolute jars are kept');
+    a.ok(r.text.split('\r\n').length === cp.split('\r\n').length - 2, 'line endings are kept; only the two lines are gone');
+    var noVar = '<classpath>\n\t<classpathentry kind="lib" path="C:/Program Files/IBM/ACE/12.0.8.0/server/classes/jplugin2.jar"/>\n</classpath>\n';
+    a.eq(LR.fixAceClasspath(noVar).removed.length, 0, 'an absolute entry with no JCN_HOME variable entry is left alone (it would be the only source of the jar)');
+  });
   test('X01', 'ACE 12.0.5 Toolkit imports the ACE 12 package and builds without errors', { category: 'IBM Toolkit validation', external: true });
   test('X02', 'ACE 13.0.8 Toolkit imports the ACE 13 package; Java project builds; BAR can be built', { category: 'IBM Toolkit validation', external: true });
   test('X03', 'BAR rebuilt in ACE 13 deploys to an ACE 13.0.8 integration server (Java 17) and passes regression tests', { category: 'IBM runtime validation', external: true });

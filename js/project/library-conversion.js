@@ -454,7 +454,7 @@
       if (del || add.length !== 1 || add[0].text.trim() !== '<nature>' + NAT.shared + '</nature>') stray.push(p + ' (unexpected change besides the shared nature)');
     });
     if ((cfg && cfg.strategy) === 'in-place') check('V6', 'Only .project natures and descriptor references were changed; every other file is unchanged', stray);
-    else check('V6', 'Refactoring touched only library files and the references to them (no unrelated file changed)', convPaths.filter(function (p) { return !/\.(project|descriptor|esql|subflow|msgflow)$/.test(p) && !ov[p].history.some(function (h) { return h.created || h.deleted; }); }));
+    else check('V6', 'Refactoring touched only library files and the references to them (no unrelated file changed)', convPaths.filter(function (p) { return !/\.(project|descriptor|esql|subflow|msgflow)$/.test(p) && !ov[p].history.some(function (h) { return h.created || h.deleted; }) && !(/\/\.classpath$/.test(p) && ov[p].history.every(function (h) { return (h.notes || []).join(' ').indexOf('another ACE install') >= 0; })); }));
     // V8-V11: resolution rules observed on the ACE 13.0.2.0 runtime (docs/LIBRARY-CONVERSION.md section 5)
     var defs = {}; // project -> {subflows: {ns:1}, modules: {schema#M:1}, routines: {SCHEMA.NAME:1}}
     st.projects.forEach(function (p) {

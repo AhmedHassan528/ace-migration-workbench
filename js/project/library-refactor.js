@@ -528,6 +528,7 @@
         create(c.name + '/' + localNs[ns], c.name, m4.text, 'local copy of ' + ns + ' (receives application ESQL modules: ' + Object.keys(hooked[ns]).join(', ') + '); uses the shared modules of ' + N);
       });
     });
+    LR.classpathEdits(group, P).forEach(function (x) { E.push(x); });
     res.converted = group;
     res.sharedLibrary = N;
     res.localCopies = localsFor;
@@ -607,6 +608,33 @@
     return { text: out, count: 1 };
   };
   function m_ids(text, prop) { var r = new RegExp('<attributeLinks promotedAttribute="Property\\.' + prop.replace(/\./g, '\\.') + '" overriddenNodes="([^"]+)">\\s*<overriddenAttribute href="ComIbmJavaCompute\\.msgnode#Property\\.javaClass"'), x = r.exec(text); return x ? x[1] : ''; }
+  /* A Java project of a converted library whose .classpath lists javacompute.jar / jplugin2.jar twice: once through the JCN_HOME variable and once
+   * through an absolute path into one particular ACE install (for example C:/Program Files/IBM/ACE/12.0.8.0/...). On any other install the
+   * absolute entry is a build path error ("Project is missing required library"); the variable entry already provides the same jar, so the
+   * absolute duplicate is removed. Nothing else in the file is touched. Returns {text, removed[]}. */
+  LR.fixAceClasspath = function (text) {
+    var removed = [], eol = /\r\n/.test(text) ? '\r\n' : '\n';
+    var lines = text.split(/\r?\n/).filter(function (l) {
+      var m = /<classpathentry\s+kind="lib"\s+path="([A-Za-z]:[\\\/][^"]*[\\\/]ACE[\\\/][\d.]+[\\\/]server[\\\/]classes[\\\/](javacompute|jplugin2)\.jar)"/i.exec(l);
+      if (!m) return true;
+      if (text.indexOf('kind="var" path="JCN_HOME/' + m[2].toLowerCase() + '.jar"') < 0) return true;
+      removed.push(m[1]); return false;
+    });
+    return { text: removed.length ? lines.join(eol) : text, removed: removed };
+  };
+  LR.classpathEdits = function (group, P) {
+    var out = [], seen = {};
+    group.forEach(function (L) { (P[L] ? P[L].refs : []).forEach(function (r) {
+      var jp = P[r]; if (!jp || jp.kind !== 'java' || seen[r]) return; seen[r] = true;
+      jp.files.forEach(function (f) {
+        if (f.rel !== '.classpath') return;
+        var t = f.text(); if (t == null) return;
+        var x = LR.fixAceClasspath(t);
+        if (x.removed.length) out.push({ path: f.outPath, project: r, before: t, after: x.text, created: false, deleted: false, notes: ['removed ' + x.removed.length + ' build path entr' + (x.removed.length > 1 ? 'ies' : 'y') + ' that point into another ACE install (' + x.removed.join(', ') + '); the JCN_HOME variable entries already provide these jars'] });
+      });
+    }); });
+    return out;
+  };
   /* Classes available to library L: Java source in referenced Java projects and classes in JARs inside L. */
   LR.libraryClasses = function (ws, st, libs) {
     var P = st.byName, set = {};
@@ -828,6 +856,7 @@
         else if (/\.esql$/i.test(f.rel)) { var sy = LR.esqlSymbols(t); var r2 = processEsql(c.name, t, sy.schema); if (r2.text !== t) edits.push({ path: f.outPath, project: c.name, before: t, after: r2.text, created: false, deleted: false, notes: r2.notes }); }
       });
     });
+    LR.classpathEdits(group, P).forEach(function (x) { edits.push(x); });
     created.forEach(function (x) { edits.push({ path: x.path, project: x.project, before: '', after: x.text, created: true, deleted: false, notes: [x.note] }); });
     Object.keys(patchLog).forEach(function (ns) { res.notes.push('Validation switched off on the node(s) that write the message in the shared subflow copies of ' + ns + ' (it is part of a subflow that holds a JavaCompute node, which cannot move into the application because an application cannot load a shared library\'s Java classes; a shared library has no message model for the application, BIP5058E): ' + patchLog[ns].join('; ') + '. Messages are still validated everywhere else.'); });
     Object.keys(unpatched).forEach(function (k) { var p = k.split('|'); res.warnings.push('Subflow ' + p[0] + ' holds a JavaCompute node and a ' + p[1] + ' node that writes the message; the ' + p[1] + ' node has no validation setting, so BIP5058E cannot be avoided when the application validates and that path runs. Check it by hand.'); });
