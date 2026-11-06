@@ -1100,6 +1100,21 @@
   });
 
   /* ---------- 15. external validation ---------- */
+  test('R13', 'JavaCompute nodes whose class is in a shared library get the Java classloader service {Library}; a promoted javaClass promotes it too', { category: 'Library conversion' }, async function (a) {
+    var LR = ACE.libref;
+    var node = function (id, cls) { return '      <nodes xmi:type="ComIbmJavaCompute.msgnode:FCMComposite_1" xmi:id="' + id + '" location="1,1" javaClass="' + cls + '">\n        <translation xmi:type="utility:ConstantString" string="J"/>\n      </nodes>\n'; };
+    var owner = function (c) { return c === 'a.Svc' ? 'JavaLIB' : null; };
+    var plain = '<ecore:EPackage>\n  <eClassifiers>\n    <composition>\n' + node('N1', 'a.Svc') + node('N2', 'x.Other') + '    </composition>\n  </eClassifiers>\n</ecore:EPackage>\n';
+    var r = LR.addNodeClassloader(plain, owner, 'App');
+    a.ok(r.count === 1 && /javaClass="a\.Svc" javaClassLoader="\{JavaLIB\}"/.test(r.text) && !/x\.Other" javaClassLoader/.test(r.text), 'the node whose class is in the shared library gets {JavaLIB}; other nodes are untouched');
+    a.eq(LR.addNodeClassloader(r.text, owner, 'App').count, 0, 'a node that already has the property is left alone');
+    a.eq(LR.addNodeClassloader(plain, owner, 'JavaLIB').count, 0, 'a node in the library that holds the class is left alone');
+    var promo = '<ecore:EPackage>\n  <eClassifiers xmi:type="eflow:FCMComposite">\n    <eStructuralFeatures xmi:type="ecore:EAttribute" xmi:id="Property.javaClass" name="javaClass" defaultValueLiteral="a.Svc">\n      <eType xmi:type="ecore:EDataType" href="x#//JavaClass"/>\n    </eStructuralFeatures>\n    <composition>\n' + node('N1', 'a.Svc') + '    </composition>\n    <propertyOrganizer>\n    </propertyOrganizer>\n    <attributeLinks promotedAttribute="Property.javaClass" overriddenNodes="N1">\n      <overriddenAttribute href="ComIbmJavaCompute.msgnode#Property.javaClass"/>\n    </attributeLinks>\n    <stickyBoard/>\n  </eClassifiers>\n</ecore:EPackage>\n';
+    var p = LR.addNodeClassloader(promo, owner, 'App');
+    a.ok(p.promoted === 1 && /xmi:id="Property\.javaClassLoader" name="javaClassLoader" defaultValueLiteral="\{JavaLIB\}"/.test(p.text) && /promotedAttribute="Property\.javaClassLoader" overriddenNodes="N1"/.test(p.text) && /describedAttribute="Property\.javaClassLoader"/.test(p.text), 'the promoted javaClass gets a promoted javaClassLoader with the library as default, linked to the same node');
+    var doc = new DOMParser().parseFromString(p.text.replace('<ecore:EPackage>', '<ecore:EPackage xmlns:ecore="e" xmlns:xmi="x" xmlns:eflow="f" xmlns:utility="u">'), 'application/xml');
+    a.ok(!doc.getElementsByTagName('parsererror').length, 'the rewritten flow is well-formed XML');
+  });
   test('X01', 'ACE 12.0.5 Toolkit imports the ACE 12 package and builds without errors', { category: 'IBM Toolkit validation', external: true });
   test('X02', 'ACE 13.0.8 Toolkit imports the ACE 13 package; Java project builds; BAR can be built', { category: 'IBM Toolkit validation', external: true });
   test('X03', 'BAR rebuilt in ACE 13 deploys to an ACE 13.0.8 integration server (Java 17) and passes regression tests', { category: 'IBM runtime validation', external: true });

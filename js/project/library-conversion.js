@@ -539,6 +539,18 @@
       });
     });
     check('V12', 'Java routines in shared libraries load their classes from the shared library (CLASSLOADER clause)', v12);
+    // V14 (verified with mqsicreatebar, Toolkit 13.0.2.0): a JavaCompute node whose class is in a shared library names it as "Java classloader service", in braces
+    var v14 = [], clsOf = {};
+    shared.forEach(function (p) { clsOf[p.name] = ACE.libref.libraryClasses(ws, st, [p.name]); });
+    var ownerOf14 = function (c) { for (var k in clsOf) if (clsOf[k][c]) return k; return null; };
+    st.projects.forEach(function (p) {
+      p.files.forEach(function (f) {
+        if (!/\.(msgflow|subflow)$/i.test(f.rel)) return;
+        var probe = ACE.libref.addNodeClassloader(f.text() || '', ownerOf14, p.name);
+        if (probe.count) v14.push(f.outPath + ': JavaCompute node(s) for ' + util.uniq(probe.classes).join(', ') + ' without the Java classloader service {' + util.uniq(probe.libs).join('}, {') + '} (Toolkit: "Class ... is not accessible to application")');
+      });
+    });
+    check('V14', 'JavaCompute nodes whose class is in a shared library name that library as the Java classloader service', v14);
     // V13 (R11, verified on ACE 13.0.2.0): an application that validates its messages must not run a node that writes the message inside a shared library
     var v13 = [], v13w = [], sharedSubs = {};
     shared.forEach(function (p) { p.files.forEach(function (f) { if (/\.subflow$/i.test(f.rel)) { var t13 = f.text() || '', n13 = (/\bnsURI="([^"]+)"/.exec(t13) || [])[1]; if (n13) sharedSubs[n13] = { text: t13, owner: p.name }; } }); });

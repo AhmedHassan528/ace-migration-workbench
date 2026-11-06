@@ -493,8 +493,8 @@
           return;
         }
         if (/\.(msgflow|subflow)$/i.test(f.rel)) {
-          var r = LR.rewriteSubflowRefs(t, cMap, null), m2 = LR.rewriteModuleRefs(r.text, modMap, esqlProps);
-          modify(f, c.name, m2.text, r.notes.concat(m2.count ? [m2.count + ' ESQL module reference(s) qualified with ' + S] : []));
+          var r = LR.rewriteSubflowRefs(t, cMap, null), m2 = LR.rewriteModuleRefs(r.text, modMap, esqlProps), jl = LR.addNodeClassloader(m2.text, function (cl) { return groupCls[cl] ? N : null; }, c.name);
+          modify(f, c.name, jl.text, r.notes.concat(m2.count ? [m2.count + ' ESQL module reference(s) qualified with ' + S] : []).concat(jl.count ? [jl.count + ' JavaCompute node(s) get the Java classloader service ' + N + ' (class ' + util.uniq(jl.classes).join(', ') + ' is in the shared library)'] : []));
           return;
         }
         if (/\.esql$/i.test(f.rel)) {
@@ -524,6 +524,7 @@
       locals.forEach(function (ns) {
         var s = subByNs[ns], lm = {}; Object.keys(subMap).forEach(function (o) { lm[o] = locals.indexOf(o) >= 0 ? localNs[o] : subMap[o]; });
         var r4 = LR.rewriteSubflowRefs(s.text, lm, localNs[ns]), m4 = LR.rewriteModuleRefs(r4.text, modMap, esqlProps);
+        var jl4 = LR.addNodeClassloader(m4.text, function (cl) { return groupCls[cl] ? N : null; }, c.name); m4 = { text: jl4.text, count: m4.count };
         create(c.name + '/' + localNs[ns], c.name, m4.text, 'local copy of ' + ns + ' (receives application ESQL modules: ' + Object.keys(hooked[ns]).join(', ') + '); uses the shared modules of ' + N);
       });
     });
@@ -556,6 +557,56 @@
     var out = text; inserts.slice().reverse().forEach(function (x) { out = out.slice(0, x.at) + ' CLASSLOADER "{' + lib + '}"' + out.slice(x.at); });
     return { text: out, count: inserts.length, classes: inserts.map(function (x) { return x.cls; }) };
   };
+  /* A JavaCompute node loads its class with the "Java classloader service" property (attribute javaClassLoader). A class that is in a shared
+   * library is not visible to the application or to another library unless that property names the shared library (Toolkit 13.0.2.0:
+   * 'Class "X" in shared library "L" is not accessible to application "A". Specify the shared library name as the value of the "Java
+   * classloader service" property on the JavaCompute node'). ownerOf(className) returns the shared library that holds the class, or a
+   * false value; a node that already has the property is left alone. Nodes in the library that holds the class are skipped by the caller. */
+  LR.addNodeClassloader = function (text, ownerOf, self) {
+    var classes = [], libs = [], byNode = {};
+    var out = String(text).replace(/<nodes xmi:type="ComIbmJavaCompute\.msgnode:FCMComposite_1"[^>]*>/g, function (tag) {
+      if (/\sjavaClassLoader="/.test(tag)) return tag;
+      var m = /\sjavaClass="([^"]*)"/.exec(tag); if (!m) return tag;
+      var L = ownerOf(m[1].replace(/&amp;/g, '&')); if (!L || L === self) return tag;
+      classes.push(m[1]); libs.push(L);
+      // verified with mqsicreatebar (Toolkit 13.0.2.0): the value is the library name in braces, as in ESQL CLASSLOADER "{L}"; the bare name is not accepted in an application
+      var value = '{' + L + '}', id = /\sxmi:id="([^"]*)"/.exec(tag);
+      if (id) byNode[id[1]] = value;
+      return tag.replace(m[0], function () { return m[0] + ' javaClassLoader="' + util.esc(value) + '"'; });
+    });
+    var promoted = 0;
+    if (classes.length) { var pr = LR.promoteClassloader(out, byNode); out = pr.text; promoted = pr.count; }
+    return { text: out, count: classes.length, classes: classes, libs: libs, promoted: promoted };
+  };
+  /* A subflow that promotes javaClass lets every instance choose the class, and the Toolkit checks the instance's class in the flow that
+   * contains the instance (an application): "Class X in shared library L is not accessible to application A" even when the node inside the
+   * subflow names the library. Promoting javaClassLoader as well, with the library as its default, makes the instances carry it
+   * (verified with mqsicreatebar, Toolkit 13.0.2.0: without it the instances' classes are reported, with it the application compiles).
+   * byNode: node id -> loader value, for the JavaCompute nodes that were given one. */
+  LR.promoteClassloader = function (text, byNode) {
+    var re = /<attributeLinks promotedAttribute="Property\.([^"]+)" overriddenNodes="([^"]+)">\s*<overriddenAttribute href="ComIbmJavaCompute\.msgnode#Property\.javaClass"\/>\s*<\/attributeLinks>/g, m, pick = null;
+    if (/xmi:id="Property\.javaClassLoader"/.test(text)) return { text: text, count: 0 };
+    while ((m = re.exec(text)) && !pick) {
+      var ids = m[2].split(/\s+/).filter(Boolean), vals = ids.map(function (i) { return byNode[i]; });
+      if (ids.length && vals.every(function (v) { return v && v === vals[0]; })) pick = { prop: m[1], value: vals[0] };
+    }
+    if (!pick) return { text: text, count: 0 };
+    var lastFeat = text.lastIndexOf('</eStructuralFeatures>');
+    if (lastFeat < 0) return { text: text, count: 0 };
+    var out = text, ins = [];
+    var feat = '\n    <eStructuralFeatures xmi:type="ecore:EAttribute" xmi:id="Property.javaClassLoader" name="javaClassLoader" defaultValueLiteral="' + util.esc(pick.value) + '">\n      <eType xmi:type="ecore:EDataType" href="http://www.eclipse.org/emf/2002/Ecore#//EString"/>\n    </eStructuralFeatures>';
+    ins.push({ at: lastFeat + '</eStructuralFeatures>'.length, s: feat });
+    var desc = '\n            <propertyDescriptor groupName="Group.Basic" propertyEditor="com.ibm.etools.mft.flow.properties.StringPropertyEditor" configurable="true" describedAttribute="Property.javaClassLoader">\n              <propertyName xmi:type="utility:TranslatableString" key="Property.javaClassLoader" bundleName="ComIbmJavaCompute" pluginId="com.ibm.etools.mft.ibmnodes"/>\n            </propertyDescriptor>';
+    var mk = 'describedAttribute="Property.' + pick.prop + '.internal_npcompiler">', mi = text.indexOf(mk), po = text.indexOf('</propertyOrganizer>');
+    if (mi >= 0) ins.push({ at: text.indexOf('</propertyDescriptor>', mi) + '</propertyDescriptor>'.length, s: desc });
+    else if (po >= 0) ins.push({ at: po, s: desc.replace(/^\n {12}/, '    ') + '\n    ' });
+    var link = '    <attributeLinks promotedAttribute="Property.javaClassLoader" overriddenNodes="' + m_ids(text, pick.prop) + '">\n      <overriddenAttribute href="ComIbmJavaCompute.msgnode#Property.javaClassLoader"/>\n    </attributeLinks>\n';
+    var sb = text.indexOf('    <stickyBoard'), ec = text.lastIndexOf('  </eClassifiers>');
+    ins.push({ at: sb >= 0 ? sb : ec, s: link });
+    ins.sort(function (a, b) { return b.at - a.at; }).forEach(function (x) { out = out.slice(0, x.at) + x.s + out.slice(x.at); });
+    return { text: out, count: 1 };
+  };
+  function m_ids(text, prop) { var r = new RegExp('<attributeLinks promotedAttribute="Property\\.' + prop.replace(/\./g, '\\.') + '" overriddenNodes="([^"]+)">\\s*<overriddenAttribute href="ComIbmJavaCompute\\.msgnode#Property\\.javaClass"'), x = r.exec(text); return x ? x[1] : ''; }
   /* Classes available to library L: Java source in referenced Java projects and classes in JARs inside L. */
   LR.libraryClasses = function (ws, st, libs) {
     var P = st.byName, set = {};
@@ -665,6 +716,7 @@
       while ((b = br.exec(attrs))) { if (!props[b[2]]) continue; var own2 = modOwner['#' + b[3]]; if (!own2 || !sc[own2]) return true; }
       return false;
     }
+    function javaOwner(cls) { for (var gi = 0; gi < group.length; gi++) { var L = group[gi]; if ((classesOf[L] = classesOf[L] || LR.libraryClasses(ws, st, [L]))[cls]) return L; } return null; }
     function hasJavaCompute(T) { return /ComIbmJavaCompute\.msgnode:FCMComposite_1"/.test(subs[T].text); }
     var appValCache = {};
     function appValidates(C) { if (!(C in appValCache)) appValCache[C] = (P[C].files || []).some(function (f) { return /\.msgflow$/i.test(f.rel) && LR.flowValidates(f.text() || ''); }); return appValCache[C]; }
@@ -696,7 +748,11 @@
       while ((b = bare.exec(text))) { var o2 = modOwner['#' + b[3]]; if (o2) needRef(C, o2); }
       var dv = /defaultValueLiteral="([A-Za-z_][^"\s.#\/:]*)"[^>]*>\s*<eType[^>]*#\/\/EsqlModule"/g, d; while ((d = dv.exec(text))) { var o3 = modOwner['#' + d[1]]; if (o3) needRef(C, o3); }
       var r1 = LR.rewriteSubflowRefs(text, map, selfNs), r2 = LR.rewriteModuleRefs(r1.text, modMap, esqlProps), r3 = LR.syncPromotedModules(r2.text);
-      return { text: r3.text, notes: r1.notes.concat(r2.count ? [r2.count + ' ESQL module reference(s) schema-qualified'] : []).concat(r3.count ? [r3.count + ' node(s) with a promoted ESQL property get the promoted value (the old node value is never used and does not resolve in a named schema)'] : []) };
+      // JavaCompute nodes whose class is in a shared library: name that library as the node's Java classloader service
+      var jcl = LR.addNodeClassloader(r3.text, javaOwner, C);
+      jcl.libs.forEach(function (L) { needRef(C, L); });
+      r3 = { text: jcl.text, count: r3.count, javaLoader: jcl };
+      return { text: r3.text, notes: r1.notes.concat(r2.count ? [r2.count + ' ESQL module reference(s) schema-qualified'] : []).concat(r3.count ? [r3.count + ' node(s) with a promoted ESQL property get the promoted value (the old node value is never used and does not resolve in a named schema)'] : []).concat(r3.javaLoader.count ? [r3.javaLoader.count + ' JavaCompute node(s) get the Java classloader service ' + util.uniq(r3.javaLoader.libs).join(', ') + ' (class ' + util.uniq(r3.javaLoader.classes).join(', ') + ' is in that shared library)'] : []) };
     }
     function localize(C, T) {
       var key = C + '|' + T; if (localOf[key]) return localOf[key];

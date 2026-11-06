@@ -79,7 +79,7 @@ Takes **source code** and checks it for ACE 12.0.5 → 13.0.8 (strict mode, `con
 Converts static libraries into ACE shared libraries (ACE 12 and/or ACE 13 package), so a framework change is deployed once instead of rebuilding every service. It follows the real ACE semantics, verified with the Toolkit classes, `ibmint` and a runtime: the `sharedLibraryNature`, a `<sharedLibraryReference>` in every consuming descriptor, a separate `.shlibzip`, and the content and reference rules.
 
 - **Input:** the workspace ZIP holding the applications and their libraries. If the libraries are in another ZIP, choose both ZIPs (or a folder): they are combined into one workspace; a file present twice is refused.
-- **Strategy:** by default every library **keeps its name** and becomes its own shared library; only what the runtime requires changes (default-schema ESQL/subflows move into a schema named after the library, subflows nested across libraries, application-hooked subflows and subflows that write the message while the application validates (a shared library has no message model for the application, BIP5058E) are copied locally with the subflows they nest, cross-library calls are schema-qualified, `LANGUAGE JAVA` routines get `CLASSLOADER "{Library}"`). The **merge** strategy combines interdependent libraries into one shared library; **in-place** changes only `.project` natures and descriptors.
+- **Strategy:** by default every library **keeps its name** and becomes its own shared library; only what the runtime requires changes (default-schema ESQL/subflows move into a schema named after the library, subflows nested across libraries, application-hooked subflows and subflows that write the message while the application validates (a shared library has no message model for the application, BIP5058E) are copied locally with the subflows they nest, cross-library calls are schema-qualified, `LANGUAGE JAVA` routines get `CLASSLOADER "{Library}"`, JavaCompute nodes whose class is in a shared library get the Java classloader service `{Library}`). The **merge** strategy combines interdependent libraries into one shared library; **in-place** changes only `.project` natures and descriptors.
 - It preserves the originals, can be undone, is repeatable, validates the result and writes a conversion report with `ibmint` build commands. Libraries that IBM does not allow to be shared (for example ESQL in the default schema) are reported with evidence, never forced.
 - **Evidence:** [docs/LIBRARY-CONVERSION.md](docs/LIBRARY-CONVERSION.md).
 
@@ -113,9 +113,9 @@ Extracts the source from a BAR or a Toolkit workspace ZIP and shows it two ways.
 ## 6. Tests
 
 Open `tests/index.html`, optionally select the real BAR and source ZIP(s), and press **Run all tests**.
-- 85 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C12) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
+- 86 executable tests, using real `javac` bytecode embedded as fixtures: archive handling, decompilation, migration, library conversion (L, R, S), the comparison (C01–C12) and the page independence (P01–P06). Some use real files if you select them (ContentCreate.bar, Content-Create-Source-Code.zip, valleysoft.zip).
 - 4 **EXTERNAL** tests that need the IBM Toolkit/runtime; they are never reported as passed.
-- Recorded run from `file://` (headless Chrome) with the real files: **85 PASS, 4 EXTERNAL**.
+- Recorded run from `file://` (headless Chrome) with the real files: **86 PASS, 4 EXTERNAL**.
 
 ## 7. Structure
 
